@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EarthPedal Octave Lab</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:0; padding:20px; }
+    .card { max-width:900px; margin:0 auto; background:#1a1a1a; border:1px solid #333; border-radius:8px; padding:16px; }
+    h1 { margin-top:0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+    label { display:block; font-size:12px; color:#bbb; margin-bottom:4px; text-transform:uppercase; }
+    input,select,button { width:100%; padding:8px; background:#222; color:#eee; border:1px solid #444; border-radius:4px; }
+    button { cursor:pointer; }
+    .row { display:flex; gap:8px; }
+    .row button { flex:1; }
+    #status { margin-top:12px; padding:10px; background:#0f0f0f; border:1px solid #333; border-radius:4px; white-space:pre-wrap; }
+    .ok { color:#80ff80; }
+    .err { color:#ff9a9a; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>EarthPedal · Octave Only</h1>
+    <div id="engine">Engine: off</div>
+    <div id="source">Source: mic</div>
+
+    <div class="grid" style="margin-top:12px;">
+      <div>
+        <label>Power</label>
+        <button id="powerBtn">Start Audio</button>
+      </div>
+      <div>
+        <label>Input Source</label>
+        <select id="sourceSelect">
+          <option value="mic">Microphone</option>
+          <option value="file">File player</option>
+        </select>
+      </div>
+      <div>
+        <label>Upload File</label>
+        <input type="file" id="fileInput" accept="audio/*" />
+      </div>
+      <div>
+        <label>Mode</label>
+        <select id="mode">
+          <option value="0">Off</option>
+          <option value="1">Up</option>
+          <option value="2">UpDown</option>
+        </select>
+      </div>
+      <div><label>Dry Blend</label><input id="dryBlend" type="range" min="0" max="1" step="0.01" value="0.5" /></div>
+      <div><label>Up Gain</label><input id="upGain" type="range" min="0" max="2" step="0.01" value="1" /></div>
+      <div><label>Down1 Gain</label><input id="down1Gain" type="range" min="0" max="2" step="0.01" value="1" /></div>
+      <div><label>Down2 Gain</label><input id="down2Gain" type="range" min="0" max="2" step="0.01" value="1" /></div>
+      <div>
+        <label>Internal Dry</label>
+        <select id="internalDry">
+          <option value="1">Enabled</option>
+          <option value="0">Disabled</option>
+        </select>
+      </div>
+      <div>
+        <label>Reset DSP</label>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <label>Timeline</label>
+      <input id="timeline" type="range" min="0" max="100" value="0" />
+      <div id="time">00:00 / 00:00</div>
+    </div>
+
+    <div class="row" style="margin-top:8px;">
+      <button id="playBtn">Play</button>
+      <button id="pauseBtn">Pause</button>
+      <button id="stopBtn">Stop</button>
+    </div>
+
+    <div id="status">Ready.</div>
+  </div>
+
+  <script type="module" src="./octave-main.js"></script>
+</body>
+</html>

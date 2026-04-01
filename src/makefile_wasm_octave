@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p deps
+if [ ! -d "deps/q" ]; then
+    git clone https://github.com/cycfi/q.git deps/q
+fi
+if [ ! -d "deps/gcem" ]; then
+    git clone https://github.com/kthohr/gcem.git deps/gcem
+fi
+if [ ! -d "deps/infra" ]; then
+    git clone https://github.com/cycfi/infra.git deps/infra
+fi
+
+emcc -O3 \
+    --bind \
+    -s WASM=1 \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s EXPORT_ES6=1 \
+    -s MODULARIZE=1 \
+    -s EXPORT_NAME="'OctaveModule'" \
+    -s EXPORTED_FUNCTIONS="['_malloc', '_free']" \
+    -std=c++20 \
+    -I./deps/q/q_lib/include \
+    -I./deps/gcem/include \
+    -I./deps/infra/include \
+    -I./Util \
+    src/octave_wasm_wrapper.cpp \
+    poly_octave/poly_octaver.cpp \
+    -o web/octave-module.js
