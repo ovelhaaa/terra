@@ -93,6 +93,19 @@ Then open:
 
 - `http://localhost:8080/web/` for the main demo
 - `http://localhost:8080/web/octave.html` for the octave-only demo
+## GitHub Pages deploy
+
+The web demo published on GitHub Pages is built from this repository using GitHub Actions.
+
+1. Generate/update web assets locally (same commands used by CI):
+   - `make web-main`
+   - `make web-octave`
+   - `make web-all` (recommended, builds both)
+2. The deploy workflow (`.github/workflows/deploy-pages.yml`) runs `make web-all`, validates expected `.wasm`, worklet, JS and HTML files, and publishes the `web/` folder.
+3. In **Settings → Pages**, set **Source** to **GitHub Actions**.
+
+The same `web/` output remains compatible with local static serving (`python3 -m http.server 8080`) and with the GitHub Pages project-site subpath.
+
 ## V1 modular sandbox spec
 
 A proposta técnica da V1 (arquitetura, schema de patch e contrato DSP) está documentada em:
