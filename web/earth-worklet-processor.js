@@ -50,25 +50,200 @@ function ensureURLConstructor() {
   };
 }
 
+class PassThroughModule {
+  process(channelData, frames) {
+    return channelData;
+  }
+}
+
+class GainModule {
+  constructor() {
+    this.gain = 1.0;
+  }
+
+  setParam(paramId, value) {
+    if (paramId === 'gain') {
+      this.gain = Number.isFinite(value) ? value : this.gain;
+    }
+  }
+
+  process(channelData, frames) {
+    const gain = this.gain;
+    for (let ch = 0; ch < channelData.length; ch += 1) {
+      const channel = channelData[ch];
+      for (let i = 0; i < frames; i += 1) {
+        channel[i] *= gain;
+      }
+    }
+    return channelData;
+  }
+}
+
+class SerialAudioEngine {
+  constructor() {
+    this.sampleRate = 0;
+    this.maxBlockSize = 128;
+    this.channelCount = 2;
+    this.tempChannels = [];
+    this.currentChannels = [];
+    this.modules = [];
+    this.moduleStates = [];
+  }
+
+  init(sampleRateValue, maxBlockSize) {
+    this.sampleRate = sampleRateValue;
+    this.maxBlockSize = Math.max(1, Math.floor(maxBlockSize || 128));
+
+    this.tempChannels = new Array(this.channelCount);
+    this.currentChannels = new Array(this.channelCount);
+
+    for (let ch = 0; ch < this.channelCount; ch += 1) {
+      this.tempChannels[ch] = new Float32Array(this.maxBlockSize);
+      this.currentChannels[ch] = this.tempChannels[ch];
+    }
+  }
+
+  createModule(type) {
+    if (type === 'passthrough') return new PassThroughModule();
+    if (type === 'gain') return new GainModule();
+    return null;
+  }
+
+  setPatch(patch) {
+    const chain = Array.isArray(patch?.chain) ? patch.chain : [];
+    this.modules = [];
+    this.moduleStates = [];
+
+    for (let i = 0; i < chain.length; i += 1) {
+      const moduleConfig = chain[i];
+      const module = this.createModule(moduleConfig?.type);
+      if (!module) {
+        continue;
+      }
+
+      const state = {
+        id: String(moduleConfig.id || `${moduleConfig.type}_${i}`),
+        enabled: moduleConfig.enabled !== false,
+        bypass: moduleConfig.bypass === true,
+        module
+      };
+
+      const params = moduleConfig.params || {};
+      Object.keys(params).forEach((paramId) => {
+        if (typeof module.setParam === 'function') {
+          module.setParam(paramId, Number(params[paramId]));
+        }
+      });
+
+      this.modules.push(module);
+      this.moduleStates.push(state);
+    }
+  }
+
+  setParam(moduleId, paramId, value) {
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      const state = this.moduleStates[i];
+      if (state.id === moduleId && typeof state.module.setParam === 'function') {
+        state.module.setParam(paramId, Number(value));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  setModuleBypass(moduleId, bypass) {
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      const state = this.moduleStates[i];
+      if (state.id === moduleId) {
+        state.bypass = bypass === true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  reset() {
+    for (let ch = 0; ch < this.channelCount; ch += 1) {
+      this.tempChannels[ch].fill(0);
+    }
+  }
+
+  process(inputs, outputs, frames) {
+    const input = inputs[0] || [];
+    const output = outputs[0] || [];
+    if (output.length === 0 || frames <= 0) {
+      return;
+    }
+
+    for (let ch = 0; ch < this.channelCount; ch += 1) {
+      const inChannel = input[ch] || input[0];
+      const outChannel = output[ch] || output[0];
+      if (!outChannel) {
+        continue;
+      }
+
+      if (inChannel) {
+        outChannel.set(inChannel.subarray(0, frames));
+      } else {
+        outChannel.fill(0, 0, frames);
+      }
+
+      this.currentChannels[ch] = outChannel;
+    }
+
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      const state = this.moduleStates[i];
+      if (!state.enabled || state.bypass) {
+        continue;
+      }
+
+      state.module.process(this.currentChannels, frames);
+    }
+  }
+}
+
 class EarthWorkletProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
 
     this.module = null;
-    this.processor = null;
     this.isInitializing = false;
+    this.engine = new SerialAudioEngine();
 
-    this.inLPtr = null;
-    this.inRPtr = null;
-    this.outLPtr = null;
-    this.outRPtr = null;
-    this.bufferSize = 0;
+    this.metrics = {
+      callbacks: 0,
+      totalMs: 0,
+      peakMs: 0,
+      reportInterval: 30
+    };
 
     this.port.onmessage = (event) => {
-      if (event.data.type === 'init') {
-        this.initModule(event.data.wasmBytes).catch((err) => {
+      const msg = event.data || {};
+
+      if (msg.type === 'init') {
+        this.init(msg.wasmBytes, msg.maxBlockSize).catch((err) => {
           this.reportError('init', err);
         });
+        return;
+      }
+
+      if (msg.type === 'setPatch') {
+        this.engine.setPatch(msg.patch || {});
+        return;
+      }
+
+      if (msg.type === 'setParam') {
+        this.engine.setParam(msg.moduleId, msg.paramId, msg.value);
+        return;
+      }
+
+      if (msg.type === 'setModuleBypass') {
+        this.engine.setModuleBypass(msg.moduleId, msg.bypass);
+        return;
+      }
+
+      if (msg.type === 'reset') {
+        this.engine.reset();
       }
     };
   }
@@ -84,167 +259,59 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
     });
   }
 
-  async initModule(wasmBytes) {
-    if (this.processor || this.isInitializing) {
+  async init(wasmBytes, maxBlockSize) {
+    if (this.isInitializing) {
       return;
     }
 
     this.isInitializing = true;
 
-    if (!wasmBytes || wasmBytes.byteLength === 0) {
-      this.isInitializing = false;
-      throw new Error('Missing or empty wasm bytes received in worklet init.');
+    if (wasmBytes && wasmBytes.byteLength > 0) {
+      try {
+        ensureURLConstructor();
+        this.module = await Module({ wasmBinary: wasmBytes });
+      } catch (err) {
+        this.reportError('module-init', err);
+      }
     }
 
-    let module;
-    try {
-      ensureURLConstructor();
-      module = await Module({
-        wasmBinary: wasmBytes
-      });
-    } catch (err) {
-      this.reportError('module-init', err);
-      this.isInitializing = false;
-      return;
-    }
-
-    this.module = module;
-
-    try {
-      this.processor = new module.EarthAudioProcessor(sampleRate);
-    } catch (err) {
-      this.reportError('processor-construct', err);
-      this.isInitializing = false;
-      return;
-    }
-
-    this.port.postMessage({ type: 'ready' });
+    this.engine.init(sampleRate, maxBlockSize || 128);
+    this.port.postMessage({ type: 'ready', sampleRate, maxBlockSize: maxBlockSize || 128 });
     this.isInitializing = false;
   }
 
-  static get parameterDescriptors() {
-    return [
-      { name: 'preDelay', defaultValue: 0.0, minValue: 0.0, maxValue: 1.0 },
-      { name: 'mix', defaultValue: 0.5, minValue: 0.0, maxValue: 1.0 },
-      { name: 'decay', defaultValue: 0.5, minValue: 0.0, maxValue: 1.0 },
-      { name: 'modDepth', defaultValue: 0.5, minValue: 0.0, maxValue: 1.0 },
-      { name: 'modSpeed', defaultValue: 0.5, minValue: 0.0, maxValue: 1.0 },
-      { name: 'filter', defaultValue: 0.5, minValue: 0.0, maxValue: 1.0 },
-      { name: 'eq1Gain', defaultValue: -11.0, minValue: -24.0, maxValue: 24.0 },
-      { name: 'eq2Gain', defaultValue: 5.0, minValue: -24.0, maxValue: 24.0 },
-      { name: 'reverbSize', defaultValue: 1, minValue: 0, maxValue: 2 },
-      { name: 'octaveMode', defaultValue: 0, minValue: 0, maxValue: 2 },
-      { name: 'disableInputDiffusion', defaultValue: 0, minValue: 0, maxValue: 1 },
-    ];
+  maybeReportMetrics(frames, elapsedMs) {
+    this.metrics.callbacks += 1;
+    this.metrics.totalMs += elapsedMs;
+    this.metrics.peakMs = Math.max(this.metrics.peakMs, elapsedMs);
+
+    if (this.metrics.callbacks % this.metrics.reportInterval === 0) {
+      this.port.postMessage({
+        type: 'metrics',
+        blockSize: frames,
+        sampleRate,
+        avgProcessMs: this.metrics.totalMs / this.metrics.callbacks,
+        peakProcessMs: this.metrics.peakMs
+      });
+    }
   }
 
-  freeBuffers() {
-    if (!this.module) return;
-
-    [this.inLPtr, this.inRPtr, this.outLPtr, this.outRPtr].forEach((ptr) => {
-      if (ptr) {
-        this.module._free(ptr);
-      }
-    });
-
-    this.inLPtr = null;
-    this.inRPtr = null;
-    this.outLPtr = null;
-    this.outRPtr = null;
-    this.bufferSize = 0;
-  }
-
-  allocateBuffers(size) {
-    if (!this.module || size <= 0) {
-      return false;
-    }
-
-    if (this.bufferSize === size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
-      return true;
-    }
-
-    this.freeBuffers();
-
-    const bytes = size * Float32Array.BYTES_PER_ELEMENT;
-    this.inLPtr = this.module._malloc(bytes);
-    this.inRPtr = this.module._malloc(bytes);
-    this.outLPtr = this.module._malloc(bytes);
-    this.outRPtr = this.module._malloc(bytes);
-
-    if (!this.inLPtr || !this.inRPtr || !this.outLPtr || !this.outRPtr) {
-      this.reportError('buffer-alloc', new Error(`WASM buffer allocation failed for size=${size}`));
-      this.freeBuffers();
-      return false;
-    }
-
-    this.bufferSize = size;
-    return true;
-  }
-
-  process(inputs, outputs, parameters) {
+  process(inputs, outputs) {
     const output = outputs[0];
     if (!output || output.length === 0) {
       return true;
     }
 
-    const outL = output[0];
-    const outR = output.length > 1 ? output[1] : output[0];
-    outL.fill(0);
-    if (outR !== outL) {
-      outR.fill(0);
-    }
-
-    if (!this.processor || !this.module) {
+    const frames = output[0]?.length || 0;
+    if (frames <= 0) {
       return true;
     }
 
-    const input = inputs[0] || [];
-    const inL = input[0] || outL;
-    const inR = input.length > 1 ? input[1] : inL;
+    const startMs = globalThis.performance ? globalThis.performance.now() : 0;
+    this.engine.process(inputs, outputs, frames);
+    const endMs = globalThis.performance ? globalThis.performance.now() : startMs;
 
-    if (!inL || !inR) {
-      return true;
-    }
-
-    const size = inL.length;
-    if (!this.allocateBuffers(size)) {
-      return true;
-    }
-
-    const getParam = (name) => {
-      const param = parameters[name];
-      if (!param || param.length === 0) {
-        return 0;
-      }
-      return param[0];
-    };
-
-    this.processor.setPreDelay(getParam('preDelay'));
-    this.processor.setMix(getParam('mix'));
-    this.processor.setDecay(getParam('decay'));
-    this.processor.setModDepth(getParam('modDepth'));
-    this.processor.setModSpeed(getParam('modSpeed'));
-    this.processor.setFilter(getParam('filter'));
-    this.processor.setEq1Gain(getParam('eq1Gain'));
-    this.processor.setEq2Gain(getParam('eq2Gain'));
-    this.processor.setReverbSize(Math.round(getParam('reverbSize')));
-    this.processor.setOctaveMode(Math.round(getParam('octaveMode')));
-    this.processor.setDisableInputDiffusion(getParam('disableInputDiffusion') > 0.5);
-
-    const memView = new Float32Array(this.module.HEAPF32.buffer);
-
-    memView.set(inL, this.inLPtr >> 2);
-    memView.set(inR, this.inRPtr >> 2);
-
-    this.processor.process(this.inLPtr, this.inRPtr, this.outLPtr, this.outRPtr, size);
-
-    const outLArray = memView.subarray(this.outLPtr >> 2, (this.outLPtr >> 2) + size);
-    const outRArray = memView.subarray(this.outRPtr >> 2, (this.outRPtr >> 2) + size);
-
-    outL.set(outLArray);
-    if (output.length > 1) {
-      output[1].set(outRArray);
-    }
+    this.maybeReportMetrics(frames, endMs - startMs);
 
     return true;
   }
