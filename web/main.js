@@ -644,6 +644,7 @@ function renderPatchChain() {
       module.enabled = !module.enabled;
       postToEngine({ type: 'setModuleEnabled', moduleId: module.id, enabled: module.enabled });
       renderPatchChain();
+      refreshPatchJsonTextarea();
     });
 
     const bypassToggle = document.createElement('button');
