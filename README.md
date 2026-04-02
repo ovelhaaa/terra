@@ -56,11 +56,13 @@ The polyoctave effect is from: [Terrarium-Poly-Octave](https://github.com/schult
 
 ## Build (web-only)
 
-This repository is now **web-only**. The main build command is:
+This repository is now **web-only**. The primary build target is:
 
 ```bash
 make web-main
 ```
+
+For backward compatibility, old commands that call `make web-all` still work, but `web-all` is now just an alias to `web-main`.
 
 Optional cleanup of generated web artifacts:
 
