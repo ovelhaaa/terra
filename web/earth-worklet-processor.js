@@ -173,7 +173,17 @@ class EarthModule {
     }
 
     const inL = channelData[0];
-    const inR = channelData[1] || channelData[0];
+    let inR;
+
+    // Create separate buffer for mono input to prevent output clobbering
+    if (channelData[1]) {
+      inR = channelData[1];
+    } else {
+      inR = new Float32Array(frames);
+      for (let i = 0; i < frames; i += 1) {
+        inR[i] = inL[i];
+      }
+    }
 
     this.applyParams();
 
@@ -190,9 +200,17 @@ class EarthModule {
 
     this.processor.process(this.inLPtr, this.inRPtr, this.outLPtr, this.outRPtr, frames);
 
+    // Write outputs to separate channels
     for (let i = 0; i < frames; i += 1) {
-      inL[i] = heapF32[outLIndex + i];
-      inR[i] = heapF32[outRIndex + i];
+      channelData[0][i] = heapF32[outLIndex + i];
+    }
+
+    if (!channelData[1]) {
+      channelData[1] = new Float32Array(frames);
+    }
+
+    for (let i = 0; i < frames; i += 1) {
+      channelData[1][i] = heapF32[outRIndex + i];
     }
 
     return channelData;

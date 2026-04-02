@@ -459,14 +459,16 @@ function setupUIBindings() {
       valueLabel.textContent = `${initialValue.toFixed(mapping.decimals)}${mapping.suffix}`;
     }
 
-    input.addEventListener('input', (e) => {
-      const value = Number(e.target.value);
-      sendEarthParamUpdate(mapping.id, value);
+    if (!mapping.isSwitch) {
+      input.addEventListener('input', (e) => {
+        const value = Number(e.target.value);
+        sendEarthParamUpdate(mapping.id, value);
 
-      if (!mapping.isSwitch && valueLabel) {
-        valueLabel.textContent = `${value.toFixed(mapping.decimals)}${mapping.suffix}`;
-      }
-    });
+        if (valueLabel) {
+          valueLabel.textContent = `${value.toFixed(mapping.decimals)}${mapping.suffix}`;
+        }
+      });
+    }
 
     if (mapping.isSwitch) {
       input.addEventListener('change', (e) => {
