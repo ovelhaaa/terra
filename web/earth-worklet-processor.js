@@ -113,7 +113,7 @@ class EarthModule {
   }
 
   ensureBuffer(size) {
-    if (this.bufferSize === size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
+    if (this.bufferSize >= size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
       return true;
     }
 
@@ -133,9 +133,20 @@ class EarthModule {
     this.bufferSize = size;
     return true;
   }
+}
 
-  freeBuffers() {
-    if (!this.module) return;
+class EarthModule {
+  constructor(wasmModule, sampleRateValue, maxBlockSize) {
+    this.module = wasmModule;
+    this.sampleRate = sampleRateValue;
+    this.maxBlockSize = maxBlockSize;
+    this.processor = new wasmModule.EarthAudioProcessor(sampleRateValue);
+
+    this.inLPtr = 0;
+    this.inRPtr = 0;
+    this.outLPtr = 0;
+    this.outRPtr = 0;
+    this.bufferSize = 0;
 
     if (this.inLPtr) this.module._free(this.inLPtr);
     if (this.inRPtr) this.module._free(this.inRPtr);
@@ -173,7 +184,18 @@ class EarthModule {
     }
 
     const inL = channelData[0];
+    let inR;
+
+  process(channelData, frames) {
+    if (!this.ensureBuffer(frames)) {
+      return channelData;
+    }
+
+    const inL = channelData[0];
     const inR = channelData[1] || channelData[0];
+    const outL = channelData[0];
+    const outR = channelData[1] || channelData[0];
+    const isStereo = channelData[1] !== undefined;
 
     this.applyParams();
 
@@ -191,8 +213,10 @@ class EarthModule {
     this.processor.process(this.inLPtr, this.inRPtr, this.outLPtr, this.outRPtr, frames);
 
     for (let i = 0; i < frames; i += 1) {
-      inL[i] = heapF32[outLIndex + i];
-      inR[i] = heapF32[outRIndex + i];
+      outL[i] = heapF32[outLIndex + i];
+      if (isStereo) {
+        outR[i] = heapF32[outRIndex + i];
+      }
     }
 
     return channelData;
@@ -211,8 +235,8 @@ class SerialAudioEngine {
     this.maxBlockSize = 128;
     this.channelCount = 2;
     this.module = null;
-    this.modules = [];
     this.moduleStates = [];
+    this.channelData = [null, null];
   }
 
   init(sampleRateValue, maxBlockSize, wasmModule) {
@@ -242,7 +266,6 @@ class SerialAudioEngine {
   setPatch(patch) {
     const chain = Array.isArray(patch?.chain) ? patch.chain : [];
     this.disposeModules();
-    this.modules = [];
     this.moduleStates = [];
 
     for (let i = 0; i < chain.length; i += 1) {
@@ -263,7 +286,6 @@ class SerialAudioEngine {
         module.setParam(paramIds[p], Number(params[paramIds[p]]));
       }
 
-      this.modules.push(module);
       this.moduleStates.push(state);
     }
   }
@@ -315,13 +337,15 @@ class SerialAudioEngine {
         outChannel.fill(0, 0, frames);
       }
     }
+  }
 
-    const channelData = [output[0], output[1] || output[0]];
+    this.channelData[0] = output[0];
+    this.channelData[1] = output[1] || output[0];
 
     for (let i = 0; i < this.moduleStates.length; i += 1) {
       const state = this.moduleStates[i];
       if (!state.enabled || state.bypass) continue;
-      state.module.process(channelData, frames);
+      state.module.process(this.channelData, frames);
     }
   }
 }
