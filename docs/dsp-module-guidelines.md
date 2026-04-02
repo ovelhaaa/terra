@@ -43,24 +43,29 @@ public:
 };
 ```
 
-Regras de implementação
-processar estéreo por padrão;
-aceitar Prepare() no init e se sample rate mudar;
-suportar Reset() em troca de patch/fonte;
-implementar bypass sem alocação por callback;
-evitar alocação dinâmica dentro de Process();
-usar buffers temporários pré-alocados quando necessário.
+## Regras de implementação
 
-PatchEngine serial
+- processar estéreo por padrão;
+- aceitar `Prepare()` no init e se sample rate mudar;
+- suportar `Reset()` em troca de patch/fonte;
+- implementar bypass sem alocação por callback;
+- evitar alocação dinâmica dentro de `Process()`;
+- usar buffers temporários pré-alocados quando necessário.
+
+## PatchEngine serial
+
 Estratégia:
-copiar entrada para tempA;
-cada módulo lê de um buffer e escreve no outro;
-alternar tempA/tempB por etapa;
-copiar buffer final para saída.
+
+1. copiar entrada para `tempA`;
+2. cada módulo lê de um buffer e escreve no outro;
+3. alternar `tempA`/`tempB` por etapa;
+4. copiar buffer final para saída.
+
 Isso reduz custo e evita alocações por callback.
 
-Métricas sugeridas
-TypeScript
+## Métricas sugeridas
+
+```ts
 export interface EngineMetrics {
   sampleRate: number;
   blockSize: number;
@@ -78,8 +83,10 @@ export interface EngineMetrics {
     costClass: 'low' | 'medium' | 'high';
   }>;
 }
+```
 
 Fórmulas:
-budgetMs = (blockSize / sampleRate) * 1000
-cpuLoadApprox = callbackMsAvg / budgetMs
-memoryBytesEstimated = sum(stateBytes + bufferBytes)
+
+- `budgetMs = (blockSize / sampleRate) * 1000`
+- `cpuLoadApprox = callbackMsAvg / budgetMs`
+- `memoryBytesEstimated = sum(stateBytes + bufferBytes)`
