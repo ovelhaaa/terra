@@ -113,7 +113,7 @@ class EarthModule {
   }
 
   ensureBuffer(size) {
-    if (this.bufferSize === size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
+    if (this.bufferSize >= size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
       return true;
     }
 
