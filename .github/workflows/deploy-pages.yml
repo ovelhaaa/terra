@@ -1,0 +1,94 @@
+name: Deploy Web Demo to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build web demos
+        run: |
+          set -euo pipefail
+          echo "Running web build target: make web-all"
+          make web-all
+
+      - name: Validate and list publishable artifacts
+        run: |
+          set -euo pipefail
+
+          PUBLISH_DIR="web"
+          echo "Publishing directory: ${PUBLISH_DIR}"
+
+          test -d "${PUBLISH_DIR}" || { echo "Missing directory: ${PUBLISH_DIR}"; exit 1; }
+
+          required_files=(
+            "${PUBLISH_DIR}/index.html"
+            "${PUBLISH_DIR}/main.js"
+            "${PUBLISH_DIR}/earth-worklet-processor.js"
+            "${PUBLISH_DIR}/earth-module.js"
+            "${PUBLISH_DIR}/earth-module.wasm"
+            "${PUBLISH_DIR}/octave.html"
+            "${PUBLISH_DIR}/octave-main.js"
+            "${PUBLISH_DIR}/octave-worklet-processor.js"
+            "${PUBLISH_DIR}/octave-module.js"
+            "${PUBLISH_DIR}/octave-module.wasm"
+          )
+
+          for path in "${required_files[@]}"; do
+            if [[ ! -f "${path}" ]]; then
+              echo "Missing required artifact: ${path}"
+              exit 1
+            fi
+          done
+
+          touch "${PUBLISH_DIR}/.nojekyll"
+
+          echo "\nWASM files:"
+          find "${PUBLISH_DIR}" -maxdepth 2 -type f -name '*.wasm' -print
+
+          echo "\nWorklet files:"
+          find "${PUBLISH_DIR}" -maxdepth 2 -type f -name '*worklet*' -print
+
+          echo "\nJavaScript modules:"
+          find "${PUBLISH_DIR}" -maxdepth 2 -type f -name '*.js' -print
+
+          echo "\nHTML entrypoints:"
+          find "${PUBLISH_DIR}" -maxdepth 2 -type f -name '*.html' -print
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
