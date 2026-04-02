@@ -51,7 +51,6 @@ function ensureURLConstructor() {
 class PassThroughModule {
   reset() {}
   setParam() {}
-
   process(channelData) {
     return channelData;
   }
@@ -63,8 +62,8 @@ class GainModule {
   }
 
   setParam(paramId, value) {
-    if (paramId === 'gain') {
-      this.gain = Number.isFinite(value) ? value : this.gain;
+    if (paramId === 'gain' && Number.isFinite(value)) {
+      this.gain = value;
     }
   }
 
@@ -74,6 +73,7 @@ class GainModule {
     const gain = this.gain;
     for (let ch = 0; ch < channelData.length; ch += 1) {
       const channel = channelData[ch];
+      if (!channel) continue;
       for (let i = 0; i < frames; i += 1) {
         channel[i] *= gain;
       }
@@ -85,8 +85,6 @@ class GainModule {
 class EarthModule {
   constructor(wasmModule, sampleRateValue, maxBlockSize) {
     this.module = wasmModule;
-    this.sampleRate = sampleRateValue;
-    this.maxBlockSize = maxBlockSize;
     this.processor = new wasmModule.EarthAudioProcessor(sampleRateValue);
 
     this.inLPtr = 0;
@@ -133,21 +131,8 @@ class EarthModule {
     this.bufferSize = size;
     return true;
   }
-}
 
-class EarthModule {
-  constructor(wasmModule, sampleRateValue, maxBlockSize) {
-    this.module = wasmModule;
-    this.sampleRate = sampleRateValue;
-    this.maxBlockSize = maxBlockSize;
-    this.processor = new wasmModule.EarthAudioProcessor(sampleRateValue);
-
-    this.inLPtr = 0;
-    this.inRPtr = 0;
-    this.outLPtr = 0;
-    this.outRPtr = 0;
-    this.bufferSize = 0;
-
+  freeBuffers() {
     if (this.inLPtr) this.module._free(this.inLPtr);
     if (this.inRPtr) this.module._free(this.inRPtr);
     if (this.outLPtr) this.module._free(this.outLPtr);
@@ -177,14 +162,6 @@ class EarthModule {
     this.processor.setOctaveMode(Math.round(Number(this.params.octaveMode) || 0));
     this.processor.setDisableInputDiffusion(Number(this.params.disableInputDiffusion) > 0.5);
   }
-
-  process(channelData, frames) {
-    if (!this.ensureBuffer(frames)) {
-      return channelData;
-    }
-
-    const inL = channelData[0];
-    let inR;
 
   process(channelData, frames) {
     if (!this.ensureBuffer(frames)) {
@@ -245,78 +222,131 @@ class SerialAudioEngine {
     this.module = wasmModule || null;
   }
 
+  disposeModuleState(state) {
+    if (!state) return;
+    if (typeof state.module?.dispose === 'function') {
+      state.module.dispose();
+    }
+  }
+
   disposeModules() {
     for (let i = 0; i < this.moduleStates.length; i += 1) {
-      const state = this.moduleStates[i];
-      if (typeof state.module.dispose === 'function') {
-        state.module.dispose();
-      }
+      this.disposeModuleState(this.moduleStates[i]);
     }
+    this.moduleStates = [];
   }
 
   createModule(type) {
     if (type === 'passthrough') return new PassThroughModule();
     if (type === 'gain') return new GainModule();
-    if (type === 'earth' && this.module) {
-      return new EarthModule(this.module, this.sampleRate, this.maxBlockSize);
-    }
+    if (type === 'earth' && this.module) return new EarthModule(this.module, this.sampleRate, this.maxBlockSize);
     return null;
+  }
+
+  createModuleState(moduleConfig, fallbackIndex = 0) {
+    const moduleType = String(moduleConfig?.type || '');
+    const module = this.createModule(moduleType);
+    if (!module) return null;
+
+    const state = {
+      id: String(moduleConfig?.id || `${moduleType}_${fallbackIndex}`),
+      type: moduleType,
+      enabled: moduleConfig?.enabled !== false,
+      bypass: moduleConfig?.bypass === true,
+      module
+    };
+
+    const params = moduleConfig?.params && typeof moduleConfig.params === 'object' ? moduleConfig.params : {};
+    const paramIds = Object.keys(params);
+    for (let i = 0; i < paramIds.length; i += 1) {
+      const paramId = paramIds[i];
+      const rawValue = params[paramId];
+      module.setParam(paramId, typeof rawValue === 'boolean' ? (rawValue ? 1 : 0) : Number(rawValue));
+    }
+
+    return state;
+  }
+
+  findModuleIndex(moduleId) {
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      if (this.moduleStates[i].id === moduleId) return i;
+    }
+    return -1;
   }
 
   setPatch(patch) {
     const chain = Array.isArray(patch?.chain) ? patch.chain : [];
     this.disposeModules();
-    this.moduleStates = [];
 
     for (let i = 0; i < chain.length; i += 1) {
-      const moduleConfig = chain[i];
-      const module = this.createModule(moduleConfig?.type);
-      if (!module) continue;
-
-      const state = {
-        id: String(moduleConfig.id || `${moduleConfig.type}_${i}`),
-        enabled: moduleConfig.enabled !== false,
-        bypass: moduleConfig.bypass === true,
-        module
-      };
-
-      const params = moduleConfig.params || {};
-      const paramIds = Object.keys(params);
-      for (let p = 0; p < paramIds.length; p += 1) {
-        module.setParam(paramIds[p], Number(params[paramIds[p]]));
+      const state = this.createModuleState(chain[i], i);
+      if (state) {
+        this.moduleStates.push(state);
       }
-
-      this.moduleStates.push(state);
     }
+  }
+
+  addModule(moduleConfig) {
+    const state = this.createModuleState(moduleConfig, this.moduleStates.length);
+    if (!state) return false;
+    this.moduleStates.push(state);
+    return true;
+  }
+
+  removeModule(moduleId) {
+    const index = this.findModuleIndex(moduleId);
+    if (index === -1) return false;
+    const [removed] = this.moduleStates.splice(index, 1);
+    this.disposeModuleState(removed);
+    return true;
+  }
+
+  reorderModules(moduleIds) {
+    if (!Array.isArray(moduleIds) || moduleIds.length !== this.moduleStates.length) {
+      return false;
+    }
+
+    const statesById = new Map();
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      statesById.set(this.moduleStates[i].id, this.moduleStates[i]);
+    }
+
+    const reordered = [];
+    for (let i = 0; i < moduleIds.length; i += 1) {
+      const state = statesById.get(moduleIds[i]);
+      if (!state) return false;
+      reordered.push(state);
+    }
+
+    this.moduleStates = reordered;
+    return true;
   }
 
   setParam(moduleId, paramId, value) {
-    for (let i = 0; i < this.moduleStates.length; i += 1) {
-      const state = this.moduleStates[i];
-      if (state.id === moduleId) {
-        state.module.setParam(paramId, Number(value));
-        return true;
-      }
-    }
-    return false;
+    const index = this.findModuleIndex(moduleId);
+    if (index === -1) return false;
+    this.moduleStates[index].module.setParam(paramId, Number(value));
+    return true;
   }
 
   setModuleBypass(moduleId, bypass) {
-    for (let i = 0; i < this.moduleStates.length; i += 1) {
-      const state = this.moduleStates[i];
-      if (state.id === moduleId) {
-        state.bypass = bypass === true;
-        return true;
-      }
-    }
-    return false;
+    const index = this.findModuleIndex(moduleId);
+    if (index === -1) return false;
+    this.moduleStates[index].bypass = bypass === true;
+    return true;
+  }
+
+  setModuleEnabled(moduleId, enabled) {
+    const index = this.findModuleIndex(moduleId);
+    if (index === -1) return false;
+    this.moduleStates[index].enabled = enabled !== false;
+    return true;
   }
 
   reset() {
     for (let i = 0; i < this.moduleStates.length; i += 1) {
-      const state = this.moduleStates[i];
-      if (typeof state.module.reset === 'function') {
-        state.module.reset();
+      if (typeof this.moduleStates[i].module.reset === 'function') {
+        this.moduleStates[i].module.reset();
       }
     }
   }
@@ -324,7 +354,7 @@ class SerialAudioEngine {
   process(inputs, outputs, frames) {
     const input = inputs[0] || [];
     const output = outputs[0] || [];
-    if (output.length === 0 || frames <= 0) return;
+    if (!output || output.length === 0 || frames <= 0) return;
 
     for (let ch = 0; ch < this.channelCount; ch += 1) {
       const inChannel = input[ch] || input[0];
@@ -337,7 +367,6 @@ class SerialAudioEngine {
         outChannel.fill(0, 0, frames);
       }
     }
-  }
 
     this.channelData[0] = output[0];
     this.channelData[1] = output[1] || output[0];
@@ -378,6 +407,21 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
         return;
       }
 
+      if (msg.type === 'addModule') {
+        this.engine.addModule(msg.module || {});
+        return;
+      }
+
+      if (msg.type === 'removeModule') {
+        this.engine.removeModule(msg.moduleId);
+        return;
+      }
+
+      if (msg.type === 'reorderModules') {
+        this.engine.reorderModules(msg.moduleIds || []);
+        return;
+      }
+
       if (msg.type === 'setParam') {
         this.engine.setParam(msg.moduleId, msg.paramId, msg.value);
         return;
@@ -385,6 +429,11 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
 
       if (msg.type === 'setModuleBypass') {
         this.engine.setModuleBypass(msg.moduleId, msg.bypass);
+        return;
+      }
+
+      if (msg.type === 'setModuleEnabled') {
+        this.engine.setModuleEnabled(msg.moduleId, msg.enabled);
         return;
       }
 

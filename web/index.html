@@ -450,6 +450,92 @@
             font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, monospace;
         }
 
+        .patch-controls {
+            display: grid;
+            gap: 10px;
+        }
+
+        .patch-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .patch-toolbar button {
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid var(--line-soft);
+            background: rgba(17, 23, 33, 0.76);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .patch-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: grid;
+            gap: 8px;
+        }
+
+        .patch-item {
+            border: 1px solid var(--line-soft);
+            border-radius: 12px;
+            background: rgba(10, 14, 22, 0.72);
+            padding: 10px;
+            display: grid;
+            gap: 8px;
+        }
+
+        .patch-item-label {
+            font-size: 0.84rem;
+            color: var(--text-secondary);
+        }
+
+        .patch-item-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .patch-action-btn {
+            padding: 6px 8px;
+            border-radius: 10px;
+            border: 1px solid var(--line-soft);
+            background: rgba(23, 31, 45, 0.9);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.74rem;
+        }
+
+        .patch-action-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .patch-json {
+            width: 100%;
+            min-height: 160px;
+            border-radius: 12px;
+            border: 1px solid var(--line-soft);
+            background: rgba(10, 14, 22, 0.85);
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.75rem;
+            padding: 10px;
+            resize: vertical;
+        }
+
+        .patch-message {
+            min-height: 1.2em;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+        }
+
+        .patch-message[data-state="error"] {
+            color: var(--error);
+        }
+
         @media (min-width: 640px) {
             body {
                 padding: 28px 18px 34px;
@@ -668,6 +754,24 @@
                         <option value="1">Off</option>
                     </select>
                 </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Patch Chain</h2>
+            <div class="patch-controls">
+                <div class="patch-toolbar">
+                    <button id="add-gain-module" type="button">Add Gain</button>
+                    <button id="add-passthrough-module" type="button">Add Passthrough</button>
+                    <button id="restore-default-patch" type="button">Restore Default</button>
+                </div>
+                <ul id="patch-chain-list" class="patch-list"></ul>
+                <div class="patch-toolbar">
+                    <button id="export-patch-json" type="button">Export JSON</button>
+                    <button id="import-patch-json" type="button">Import JSON</button>
+                </div>
+                <textarea id="patch-json" class="patch-json" spellcheck="false"></textarea>
+                <div id="patch-message" class="patch-message"></div>
             </div>
         </section>
     </div>
