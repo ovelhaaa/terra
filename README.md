@@ -56,7 +56,7 @@ The polyoctave effect is from: [Terrarium-Poly-Octave](https://github.com/schult
 
 ## Build (web-only)
 
-This repository is now **web-only**. The real build target is:
+This repository is now **web-only**. The primary build target is:
 
 ```bash
 make web-main
