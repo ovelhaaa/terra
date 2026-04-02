@@ -54,33 +54,18 @@ The polyoctave effect is from: [Terrarium-Poly-Octave](https://github.com/schult
 | Knob 5 | 18 | 0- 127 |
 | Knob 6 | 19 | 0- 127 |
 
-## Build
+## Build (web-only)
 
-Build with ```make```.
-
-Earth is intended to be used as a submodule in Funbox, and build paths expect to be used as such. The Earth 
-code was split out from the Funbox project to preserve the License used in reused/modified code from other projects. 
-To build Earth, it is recommended to clone the Funbox project and run "git submodule update --init --recursive" 
-to get Earth and all required dependencies. Otherwise, you can download the .bin executable to upload to the Daisy Seed 
-from the Releases page.
-## Web builds
-
-Build the current web reverb demo:
+This repository is now **web-only**. The main build command is:
 
 ```bash
 make web-main
 ```
 
-Build the standalone octave-only web demo:
+Optional cleanup of generated web artifacts:
 
 ```bash
-make web-octave
-```
-
-Build both:
-
-```bash
-make web-all
+make clean-web
 ```
 
 Local static run:
@@ -92,16 +77,16 @@ python3 -m http.server 8080
 Then open:
 
 - `http://localhost:8080/web/` for the main demo
-- `http://localhost:8080/web/octave.html` for the octave-only demo
+
+The octave effect remains in the codebase and may return later as a dedicated web module, but it is not a primary build target in the current flow.
+
 ## GitHub Pages deploy
 
 The web demo published on GitHub Pages is built from this repository using GitHub Actions.
 
-1. Generate/update web assets locally (same commands used by CI):
+1. Generate/update web assets locally:
    - `make web-main`
-   - `make web-octave`
-   - `make web-all` (recommended, builds both)
-2. The deploy workflow (`.github/workflows/deploy-pages.yml`) runs `make web-all`, validates expected `.wasm`, worklet, JS and HTML files, and publishes the `web/` folder.
+2. The deploy workflow (`.github/workflows/deploy-pages.yml`) publishes the `web/` folder.
 3. In **Settings → Pages**, set **Source** to **GitHub Actions**.
 
 The same `web/` output remains compatible with local static serving (`python3 -m http.server 8080`) and with the GitHub Pages project-site subpath.
