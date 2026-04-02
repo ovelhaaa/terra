@@ -49,11 +49,7 @@ jobs:
             "${PUBLISH_DIR}/earth-worklet-processor.js"
             "${PUBLISH_DIR}/earth-module.js"
             "${PUBLISH_DIR}/earth-module.wasm"
-            "${PUBLISH_DIR}/octave.html"
-            "${PUBLISH_DIR}/octave-main.js"
-            "${PUBLISH_DIR}/octave-worklet-processor.js"
-            "${PUBLISH_DIR}/octave-module.js"
-            "${PUBLISH_DIR}/octave-module.wasm"
+           
           )
 
           for path in "${required_files[@]}"; do
