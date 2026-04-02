@@ -133,9 +133,20 @@ class EarthModule {
     this.bufferSize = size;
     return true;
   }
+}
 
-  freeBuffers() {
-    if (!this.module) return;
+class EarthModule {
+  constructor(wasmModule, sampleRateValue, maxBlockSize) {
+    this.module = wasmModule;
+    this.sampleRate = sampleRateValue;
+    this.maxBlockSize = maxBlockSize;
+    this.processor = new wasmModule.EarthAudioProcessor(sampleRateValue);
+
+    this.inLPtr = 0;
+    this.inRPtr = 0;
+    this.outLPtr = 0;
+    this.outRPtr = 0;
+    this.bufferSize = 0;
 
     if (this.inLPtr) this.module._free(this.inLPtr);
     if (this.inRPtr) this.module._free(this.inRPtr);
@@ -326,6 +337,7 @@ class SerialAudioEngine {
         outChannel.fill(0, 0, frames);
       }
     }
+  }
 
     this.channelData[0] = output[0];
     this.channelData[1] = output[1] || output[0];
