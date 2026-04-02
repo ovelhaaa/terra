@@ -11,6 +11,7 @@ let transportState = 'stopped';
 let playbackStartTime = 0;
 let pausedOffset = 0;
 let animationFrameId = null;
+let selectedModuleId = null;
 
 const ENGINE_MAX_BLOCK_SIZE = 128;
 const DEFAULT_PATCH_VERSION = 1;
@@ -24,6 +25,7 @@ const engineStateLabel = document.getElementById('engine-state-label');
 
 const audioSourceSelect = document.getElementById('audioSource');
 const activeSourceBadge = document.getElementById('active-source-badge');
+const fileControlsWrap = document.getElementById('file-player-controls');
 const audioFileInput = document.getElementById('audioFile');
 const playFileBtn = document.getElementById('playFileBtn');
 const pauseFileBtn = document.getElementById('pauseFileBtn');
@@ -34,11 +36,9 @@ const elapsedTimeLabel = document.getElementById('elapsed-time');
 const durationTimeLabel = document.getElementById('duration-time');
 const loopPlaybackInput = document.getElementById('loopPlayback');
 
-const gainInput = document.getElementById('engineGain');
-const gainValueLabel = document.getElementById('engineGain-val');
-const gainBypassInput = document.getElementById('gainBypass');
-
 const patchChainList = document.getElementById('patch-chain-list');
+const inspectorContent = document.getElementById('inspector-content');
+const addEarthBtn = document.getElementById('add-earth-module');
 const addGainBtn = document.getElementById('add-gain-module');
 const addPassthroughBtn = document.getElementById('add-passthrough-module');
 const resetPatchBtn = document.getElementById('restore-default-patch');
@@ -56,17 +56,26 @@ const WORKLET_URL = new URL('./earth-worklet-processor.js', import.meta.url).hre
 const WASM_URL = new URL('./earth-module.wasm', import.meta.url).href;
 
 const earthParamMappings = [
-  { id: 'preDelay', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'mix', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'decay', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'modDepth', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'modSpeed', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'filter', isSwitch: false, suffix: '', decimals: 2 },
-  { id: 'eq1Gain', isSwitch: false, suffix: ' dB', decimals: 1 },
-  { id: 'eq2Gain', isSwitch: false, suffix: ' dB', decimals: 1 },
-  { id: 'reverbSize', isSwitch: true },
-  { id: 'octaveMode', isSwitch: true },
-  { id: 'disableInputDiffusion', isSwitch: true }
+  { id: 'preDelay', label: 'Pre-Delay', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'mix', label: 'Mix', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'decay', label: 'Decay', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'modDepth', label: 'Mod Depth', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'modSpeed', label: 'Mod Speed', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'filter', label: 'Filter', kind: 'range', min: 0, max: 1, step: 0.01, decimals: 2, suffix: '' },
+  { id: 'eq1Gain', label: 'EQ 1 (Hi)', kind: 'range', min: -24, max: 24, step: 0.1, decimals: 1, suffix: ' dB' },
+  { id: 'eq2Gain', label: 'EQ 2 (Lo)', kind: 'range', min: -24, max: 24, step: 0.1, decimals: 1, suffix: ' dB' },
+  {
+    id: 'reverbSize', label: 'Size', kind: 'select',
+    options: [{ value: 0, label: 'Small' }, { value: 1, label: 'Medium' }, { value: 2, label: 'Big' }]
+  },
+  {
+    id: 'octaveMode', label: 'Octave', kind: 'select',
+    options: [{ value: 0, label: 'None' }, { value: 1, label: 'Up' }, { value: 2, label: 'Up + Down' }]
+  },
+  {
+    id: 'disableInputDiffusion', label: 'Input Diffusion', kind: 'select',
+    options: [{ value: 0, label: 'On' }, { value: 1, label: 'Off' }]
+  }
 ];
 
 const DEFAULT_EARTH_PARAMS = {
@@ -91,20 +100,8 @@ function createDefaultPatch() {
     version: DEFAULT_PATCH_VERSION,
     meta: { name: 'Default Patch' },
     chain: [
-      {
-        id: EARTH_MODULE_ID,
-        type: 'earth',
-        enabled: true,
-        bypass: false,
-        params: { ...DEFAULT_EARTH_PARAMS }
-      },
-      {
-        id: GAIN_MODULE_ID,
-        type: 'gain',
-        enabled: true,
-        bypass: false,
-        params: { gain: 1.0 }
-      }
+      { id: EARTH_MODULE_ID, type: 'earth', enabled: true, bypass: false, params: { ...DEFAULT_EARTH_PARAMS } },
+      { id: GAIN_MODULE_ID, type: 'gain', enabled: true, bypass: false, params: { gain: 1.0 } }
     ]
   };
 }
@@ -114,22 +111,14 @@ function clonePatch(patch) {
 }
 
 function normalizeModule(module, index) {
-  if (!module || typeof module !== 'object') {
-    return null;
-  }
-
+  if (!module || typeof module !== 'object') return null;
   const type = String(module.type || '').trim();
-  if (!['earth', 'gain', 'passthrough'].includes(type)) {
-    return null;
-  }
+  if (!['earth', 'gain', 'passthrough'].includes(type)) return null;
 
   const id = String(module.id || `${type}_${index + 1}`);
   const rawParams = module.params && typeof module.params === 'object' ? module.params : {};
   const params = {};
-  const paramKeys = Object.keys(rawParams);
-  for (let i = 0; i < paramKeys.length; i += 1) {
-    const key = paramKeys[i];
-    const value = rawParams[key];
+  for (const [key, value] of Object.entries(rawParams)) {
     params[key] = typeof value === 'boolean' ? value : Number(value);
   }
 
@@ -150,43 +139,25 @@ function parsePatch(jsonText) {
     throw new Error(`JSON inválido: ${err.message}`);
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Patch precisa ser um objeto JSON.');
-  }
-
-  if (!Array.isArray(parsed.chain)) {
-    throw new Error('Patch precisa conter "chain" como array.');
-  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('Patch precisa ser um objeto JSON.');
+  if (!Array.isArray(parsed.chain)) throw new Error('Patch precisa conter "chain" como array.');
 
   const seenIds = new Set();
   const normalizedChain = [];
-
   for (let i = 0; i < parsed.chain.length; i += 1) {
     const normalized = normalizeModule(parsed.chain[i], i);
-    if (!normalized) {
-      throw new Error(`Módulo inválido na posição ${i}. Tipos suportados: earth, gain, passthrough.`);
-    }
-
-    if (seenIds.has(normalized.id)) {
-      throw new Error(`ID duplicado no patch: ${normalized.id}`);
-    }
+    if (!normalized) throw new Error(`Módulo inválido na posição ${i}. Tipos suportados: earth, gain, passthrough.`);
+    if (seenIds.has(normalized.id)) throw new Error(`ID duplicado no patch: ${normalized.id}`);
     seenIds.add(normalized.id);
 
-    if (normalized.type === 'earth') {
-      normalized.params = { ...DEFAULT_EARTH_PARAMS, ...normalized.params };
-    }
-    if (normalized.type === 'gain') {
-      normalized.params = { gain: Number(normalized.params.gain ?? 1.0) };
-    }
-
+    if (normalized.type === 'earth') normalized.params = { ...DEFAULT_EARTH_PARAMS, ...normalized.params };
+    if (normalized.type === 'gain') normalized.params = { gain: Number(normalized.params.gain ?? 1.0) };
     normalizedChain.push(normalized);
   }
 
   return {
     version: Number(parsed.version) || DEFAULT_PATCH_VERSION,
-    meta: parsed.meta && typeof parsed.meta === 'object'
-      ? { name: String(parsed.meta.name || 'Imported Patch') }
-      : { name: 'Imported Patch' },
+    meta: parsed.meta && typeof parsed.meta === 'object' ? { name: String(parsed.meta.name || 'Imported Patch') } : { name: 'Imported Patch' },
     chain: normalizedChain
   };
 }
@@ -197,13 +168,10 @@ function serializePatch(patch) {
 
 function updatePatchCountersFromState() {
   patchCounters = { earth: 0, gain: 0, passthrough: 0 };
-  for (let i = 0; i < patchState.chain.length; i += 1) {
-    const entry = patchState.chain[i];
-    if (!patchCounters[entry.type] && patchCounters[entry.type] !== 0) continue;
+  for (const entry of patchState.chain) {
+    if (!(entry.type in patchCounters)) continue;
     const match = String(entry.id).match(/_(\d+)$/);
-    if (match) {
-      patchCounters[entry.type] = Math.max(patchCounters[entry.type], Number(match[1]));
-    }
+    if (match) patchCounters[entry.type] = Math.max(patchCounters[entry.type], Number(match[1]));
   }
 }
 
@@ -212,20 +180,14 @@ function nextModuleId(type) {
   return `${type}_${patchCounters[type]}`;
 }
 
+function findModuleById(moduleId) {
+  return patchState.chain.find((entry) => entry.id === moduleId) || null;
+}
+
 function addModuleToPatch(type) {
-  const id = nextModuleId(type);
-  const module = {
-    id,
-    type,
-    enabled: true,
-    bypass: false,
-    params: {}
-  };
-
-  if (type === 'gain') {
-    module.params.gain = 1.0;
-  }
-
+  const module = { id: nextModuleId(type), type, enabled: true, bypass: false, params: {} };
+  if (type === 'gain') module.params.gain = 1.0;
+  if (type === 'earth') module.params = { ...DEFAULT_EARTH_PARAMS };
   patchState.chain.push(module);
   return module;
 }
@@ -247,16 +209,11 @@ function moveModuleInPatch(moduleId, direction) {
   return true;
 }
 
-function findFirstModuleByType(type) {
-  return patchState.chain.find((entry) => entry.type === type) || null;
-}
-
 function setStatus(message) {
   statusText.textContent = message;
 }
 
 function setPatchMessage(message, isError = false) {
-  if (!patchMessage) return;
   patchMessage.textContent = message;
   patchMessage.dataset.state = isError ? 'error' : 'ok';
 }
@@ -264,37 +221,18 @@ function setPatchMessage(message, isError = false) {
 function setEngineState(state, message) {
   engineState = state;
   statusPill.dataset.state = state;
-
-  const stateLabel = {
-    off: 'Engine Off',
-    initializing: 'Initializing',
-    ready: 'Ready',
-    running: 'Running',
-    error: 'Error'
-  };
-
+  const stateLabel = { off: 'Engine Off', initializing: 'Initializing', ready: 'Ready', running: 'Running', error: 'Error' };
   engineStateLabel.textContent = stateLabel[state] || 'Unknown';
   startButton.classList.toggle('running', state === 'running');
   startButton.textContent = state === 'running' ? 'On' : 'Power';
-
-  if (message) {
-    setStatus(message);
-  }
-
+  if (message) setStatus(message);
   updateTransportButtons();
 }
 
 function setTransportState(state, message) {
   transportState = state;
-
-  const readable = {
-    stopped: 'Stopped',
-    playing: 'Playing',
-    paused: 'Paused',
-    empty: 'No file loaded'
-  };
-
-  transportStateLabel.textContent = message || readable[state] || 'Unknown transport state';
+  const readable = { stopped: 'Parado.', playing: 'Tocando.', paused: 'Pausado.', empty: 'Nenhum arquivo carregado.' };
+  transportStateLabel.textContent = message || readable[state] || 'Estado desconhecido.';
   updateTransportButtons();
 }
 
@@ -303,29 +241,22 @@ function logError(context, err) {
 }
 
 function formatTime(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return '00:00';
-  }
-
+  if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
-function updateSourceBadge() {
-  if (audioSourceSelect.value === 'mic') {
-    activeSourceBadge.textContent = 'Mic Active';
-    activeSourceBadge.classList.add('active');
-  } else {
-    activeSourceBadge.textContent = 'File Player Active';
-    activeSourceBadge.classList.add('active');
-  }
+function updateSourceUI() {
+  const isMic = audioSourceSelect.value === 'mic';
+  activeSourceBadge.textContent = isMic ? 'Mic Active' : 'File Active';
+  activeSourceBadge.classList.add('active');
+  fileControlsWrap.classList.toggle('hidden', isMic);
 }
 
 function updateTimelineUI(currentTime = 0) {
   if (!audioBuffer) {
     timelineInput.value = 0;
-    timelineInput.style.setProperty('--progress', '0%');
     elapsedTimeLabel.textContent = '00:00';
     durationTimeLabel.textContent = '00:00';
     return;
@@ -334,9 +265,7 @@ function updateTimelineUI(currentTime = 0) {
   const duration = audioBuffer.duration;
   const safeTime = Math.max(0, Math.min(currentTime, duration));
   const progress = duration > 0 ? (safeTime / duration) * 100 : 0;
-
   timelineInput.value = String(progress);
-  timelineInput.style.setProperty('--progress', `${progress}%`);
   elapsedTimeLabel.textContent = formatTime(safeTime);
   durationTimeLabel.textContent = formatTime(duration);
 }
@@ -352,55 +281,25 @@ function updateProgressLoop() {
     stopProgressAnimation();
     return;
   }
-
   const duration = audioBuffer.duration;
-  if (duration <= 0) {
-    updateTimelineUI(0);
-    animationFrameId = requestAnimationFrame(updateProgressLoop);
-    return;
-  }
-
   const elapsedSinceStart = audioCtx.currentTime - playbackStartTime;
   const rawPosition = pausedOffset + elapsedSinceStart;
-
-  let playbackPosition = rawPosition;
-  if (loopPlaybackInput.checked) {
-    playbackPosition = rawPosition % duration;
-  } else {
-    playbackPosition = Math.min(rawPosition, duration);
-  }
-
+  const playbackPosition = loopPlaybackInput.checked ? rawPosition % duration : Math.min(rawPosition, duration);
   updateTimelineUI(playbackPosition);
   animationFrameId = requestAnimationFrame(updateProgressLoop);
 }
 
 function stopAndDisconnectFileSource() {
   if (!fileSourceNode) return;
-
-  try {
-    fileSourceNode.stop();
-  } catch (err) {
-    // source may already have ended
-  }
-
-  try {
-    fileSourceNode.disconnect();
-  } catch (err) {
-    // source may already be disconnected
-  }
-
+  try { fileSourceNode.stop(); } catch (_e) {}
+  try { fileSourceNode.disconnect(); } catch (_e) {}
   fileSourceNode.onended = null;
   fileSourceNode = null;
 }
 
 function disconnectMicSource() {
   if (!micSourceNode) return;
-
-  try {
-    micSourceNode.disconnect();
-  } catch (err) {
-    // source may already be disconnected
-  }
+  try { micSourceNode.disconnect(); } catch (_e) {}
 }
 
 function disconnectAllSources() {
@@ -409,26 +308,16 @@ function disconnectAllSources() {
 }
 
 async function ensureMicSource() {
-  if (!audioCtx || !earthNode) {
-    throw new Error('Audio graph is not initialized yet.');
-  }
+  if (!audioCtx || !earthNode) throw new Error('Audio graph is not initialized yet.');
 
   if (!micStream) {
     setStatus('Requesting microphone access…');
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        autoGainControl: false,
-        noiseSuppression: false,
-        latency: 0
-      }
+      audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false, latency: 0 }
     });
   }
 
-  if (!micSourceNode) {
-    micSourceNode = audioCtx.createMediaStreamSource(micStream);
-  }
-
+  if (!micSourceNode) micSourceNode = audioCtx.createMediaStreamSource(micStream);
   disconnectAllSources();
   micSourceNode.connect(earthNode);
   setStatus('Mic routed to Earth engine.');
@@ -436,22 +325,20 @@ async function ensureMicSource() {
 
 function connectFileMode() {
   disconnectAllSources();
-  setStatus(audioBuffer ? 'File source ready. Use transport controls.' : 'File source selected. Load an audio file.');
+  setStatus(audioBuffer ? 'Arquivo pronto. Use o transporte.' : 'Fonte arquivo selecionada. Carregue um áudio.');
   if (!audioBuffer) {
-    setTransportState('empty', 'No file loaded.');
+    setTransportState('empty', 'Nenhum arquivo carregado.');
     updateTimelineUI(0);
   }
 }
 
 function switchSource(mode) {
-  updateSourceBadge();
-
+  updateSourceUI();
   if (mode === 'mic') {
     if (!audioCtx || !earthNode) {
-      setStatus('Engine is off. Power on to use mic input.');
+      setStatus('Engine desligada. Ligue a engine para usar microfone.');
       return Promise.resolve();
     }
-
     stopPlayback();
     return ensureMicSource();
   }
@@ -469,12 +356,12 @@ function updateTransportButtons() {
   pauseFileBtn.disabled = !engineRunning || !inFileMode || !hasFile || transportState !== 'playing';
   stopFileBtn.disabled = !engineRunning || !inFileMode || !hasFile || transportState === 'stopped';
   timelineInput.disabled = !engineRunning || !inFileMode || !hasFile;
+  audioFileInput.disabled = !inFileMode;
+  loopPlaybackInput.disabled = !inFileMode;
 }
 
 function startPlaybackAt(offsetSeconds) {
-  if (!audioCtx || !audioBuffer || !earthNode) {
-    return;
-  }
+  if (!audioCtx || !audioBuffer || !earthNode) return;
 
   stopAndDisconnectFileSource();
   disconnectMicSource();
@@ -489,50 +376,39 @@ function startPlaybackAt(offsetSeconds) {
   playbackStartTime = audioCtx.currentTime;
 
   fileSourceNode.onended = () => {
-    if (fileSourceNode && fileSourceNode.loop) {
-      return;
-    }
-
+    if (fileSourceNode && fileSourceNode.loop) return;
     fileSourceNode = null;
     pausedOffset = 0;
     stopProgressAnimation();
     updateTimelineUI(0);
-    setTransportState('stopped', 'Stopped.');
+    setTransportState('stopped', 'Parado.');
   };
 
   fileSourceNode.start(0, startOffset);
-  setTransportState('playing', `Playing from ${formatTime(startOffset)}.`);
+  setTransportState('playing', `Tocando em ${formatTime(startOffset)}.`);
   updateProgressLoop();
 }
 
 function playFile() {
   if (!audioBuffer) {
-    setTransportState('empty', 'Load a file before pressing Play.');
+    setTransportState('empty', 'Carregue um arquivo antes de tocar.');
     return;
   }
-
   if (!audioCtx || audioCtx.state !== 'running') {
-    setStatus('Engine is not running. Power on first.');
+    setStatus('Engine não está em execução.');
     return;
   }
-
   startPlaybackAt(pausedOffset);
 }
 
 function pausePlayback() {
-  if (transportState !== 'playing' || !audioBuffer || !audioCtx) {
-    return;
-  }
-
+  if (transportState !== 'playing' || !audioBuffer || !audioCtx) return;
   pausedOffset += audioCtx.currentTime - playbackStartTime;
-  if (audioBuffer.duration > 0) {
-    pausedOffset %= audioBuffer.duration;
-  }
-
+  if (audioBuffer.duration > 0) pausedOffset %= audioBuffer.duration;
   stopAndDisconnectFileSource();
   stopProgressAnimation();
   updateTimelineUI(pausedOffset);
-  setTransportState('paused', `Paused at ${formatTime(pausedOffset)}.`);
+  setTransportState('paused', `Pausado em ${formatTime(pausedOffset)}.`);
 }
 
 function stopPlayback() {
@@ -540,12 +416,7 @@ function stopPlayback() {
   stopProgressAnimation();
   pausedOffset = 0;
   updateTimelineUI(0);
-
-  if (audioBuffer) {
-    setTransportState('stopped', 'Stopped.');
-  } else {
-    setTransportState('empty', 'No file loaded.');
-  }
+  setTransportState(audioBuffer ? 'stopped' : 'empty', audioBuffer ? 'Parado.' : 'Nenhum arquivo carregado.');
 }
 
 function postToEngine(message) {
@@ -561,107 +432,62 @@ function sendReset() {
   postToEngine({ type: 'reset' });
 }
 
-function setMetricText(el, text) {
-  if (el) {
-    el.textContent = text;
-  }
-}
-
 function updateMetricsUI(metrics) {
-  setMetricText(metricBlockSize, String(metrics.blockSize ?? '-'));
-  setMetricText(metricSampleRate, String(metrics.sampleRate ?? '-'));
-  setMetricText(metricAvgMs, Number(metrics.avgProcessMs || 0).toFixed(4));
-  setMetricText(metricPeakMs, Number(metrics.peakProcessMs || 0).toFixed(4));
-}
-
-function syncEarthControlsFromPatch() {
-  const earthModule = findFirstModuleByType('earth');
-
-  for (let i = 0; i < earthParamMappings.length; i += 1) {
-    const mapping = earthParamMappings[i];
-    const input = document.getElementById(mapping.id);
-    const valueLabel = document.getElementById(`${mapping.id}-val`);
-    if (!input) continue;
-
-    const hasEarth = Boolean(earthModule);
-    input.disabled = !hasEarth;
-
-    if (!hasEarth) continue;
-
-    const value = earthModule.params[mapping.id] ?? DEFAULT_EARTH_PARAMS[mapping.id] ?? 0;
-    input.value = String(value);
-
-    if (!mapping.isSwitch && valueLabel) {
-      valueLabel.textContent = `${Number(value).toFixed(mapping.decimals)}${mapping.suffix}`;
-    }
-  }
-}
-
-function syncGainControlsFromPatch() {
-  const gainModule = findFirstModuleByType('gain');
-  const hasGain = Boolean(gainModule);
-
-  if (gainInput) {
-    gainInput.disabled = !hasGain;
-    const value = hasGain ? Number(gainModule.params.gain ?? 1.0) : 1.0;
-    gainInput.value = String(value);
-    setMetricText(gainValueLabel, value.toFixed(2));
-  }
-
-  if (gainBypassInput) {
-    gainBypassInput.disabled = !hasGain;
-    gainBypassInput.value = hasGain && gainModule.bypass ? '1' : '0';
-  }
+  metricBlockSize.textContent = String(metrics.blockSize ?? '-');
+  metricSampleRate.textContent = String(metrics.sampleRate ?? '-');
+  metricAvgMs.textContent = Number(metrics.avgProcessMs || 0).toFixed(4);
+  metricPeakMs.textContent = Number(metrics.peakProcessMs || 0).toFixed(4);
 }
 
 function refreshPatchJsonTextarea() {
-  if (patchJsonTextarea) {
-    patchJsonTextarea.value = serializePatch(patchState);
-  }
+  patchJsonTextarea.value = serializePatch(patchState);
+}
+
+function setSelectedModule(moduleId) {
+  selectedModuleId = moduleId;
+  renderPatchChain();
+  renderInspector();
 }
 
 function renderPatchChain() {
-  if (!patchChainList) return;
-
   patchChainList.innerHTML = '';
 
-  for (let i = 0; i < patchState.chain.length; i += 1) {
-    const module = patchState.chain[i];
+  patchState.chain.forEach((module, index) => {
     const item = document.createElement('li');
-    item.className = 'patch-item';
+    item.className = `patch-item${module.id === selectedModuleId ? ' selected' : ''}`;
 
-    const label = document.createElement('span');
-    label.className = 'patch-item-label';
-    label.textContent = `${i + 1}. ${module.type} (${module.id})`;
+    const top = document.createElement('div');
+    top.className = 'patch-item-top';
+    top.textContent = `${index + 1}. ${module.type} (${module.id})`;
 
-    const controls = document.createElement('div');
-    controls.className = 'patch-item-actions';
+    const state = document.createElement('span');
+    state.className = 'pill';
+    state.textContent = module.bypass ? 'Bypassed' : (module.enabled ? 'Enabled' : 'Disabled');
+    top.appendChild(state);
 
-    const enabledToggle = document.createElement('button');
-    enabledToggle.className = 'patch-action-btn';
-    enabledToggle.textContent = module.enabled ? 'Disable' : 'Enable';
-    enabledToggle.addEventListener('click', () => {
-      module.enabled = !module.enabled;
-      postToEngine({ type: 'setModuleEnabled', moduleId: module.id, enabled: module.enabled });
-      renderPatchChain();
-      refreshPatchJsonTextarea();
-    });
+    const actions = document.createElement('div');
+    actions.className = 'patch-actions';
 
-    const bypassToggle = document.createElement('button');
-    bypassToggle.className = 'patch-action-btn';
-    bypassToggle.textContent = module.bypass ? 'Unbypass' : 'Bypass';
-    bypassToggle.addEventListener('click', () => {
+    const selectBtn = document.createElement('button');
+    selectBtn.type = 'button';
+    selectBtn.textContent = module.id === selectedModuleId ? 'Selected' : 'Select';
+    selectBtn.addEventListener('click', () => setSelectedModule(module.id));
+
+    const bypassBtn = document.createElement('button');
+    bypassBtn.type = 'button';
+    bypassBtn.textContent = module.bypass ? 'Unbypass' : 'Bypass';
+    bypassBtn.addEventListener('click', () => {
       module.bypass = !module.bypass;
       postToEngine({ type: 'setModuleBypass', moduleId: module.id, bypass: module.bypass });
-      syncGainControlsFromPatch();
       renderPatchChain();
+      renderInspector();
       refreshPatchJsonTextarea();
     });
 
     const upBtn = document.createElement('button');
-    upBtn.className = 'patch-action-btn';
+    upBtn.type = 'button';
     upBtn.textContent = '↑';
-    upBtn.disabled = i === 0;
+    upBtn.disabled = index === 0;
     upBtn.addEventListener('click', () => {
       if (moveModuleInPatch(module.id, 'up')) {
         postToEngine({ type: 'reorderModules', moduleIds: patchState.chain.map((entry) => entry.id) });
@@ -670,9 +496,9 @@ function renderPatchChain() {
     });
 
     const downBtn = document.createElement('button');
-    downBtn.className = 'patch-action-btn';
+    downBtn.type = 'button';
     downBtn.textContent = '↓';
-    downBtn.disabled = i === patchState.chain.length - 1;
+    downBtn.disabled = index === patchState.chain.length - 1;
     downBtn.addEventListener('click', () => {
       if (moveModuleInPatch(module.id, 'down')) {
         postToEngine({ type: 'reorderModules', moduleIds: patchState.chain.map((entry) => entry.id) });
@@ -681,89 +507,157 @@ function renderPatchChain() {
     });
 
     const removeBtn = document.createElement('button');
-    removeBtn.className = 'patch-action-btn';
+    removeBtn.type = 'button';
     removeBtn.textContent = 'Remove';
     removeBtn.disabled = module.type === 'earth' && patchState.chain.filter((entry) => entry.type === 'earth').length === 1;
     removeBtn.addEventListener('click', () => {
       const removed = removeModuleFromPatch(module.id);
       if (!removed) return;
       postToEngine({ type: 'removeModule', moduleId: module.id });
+      if (selectedModuleId === module.id) selectedModuleId = patchState.chain[0]?.id || null;
       syncControlsFromPatch();
       setPatchMessage(`Módulo ${removed.id} removido.`);
-      if (removed.type === 'earth' && !findFirstModuleByType('earth')) {
-        setPatchMessage('Último módulo earth removido. DSP principal ficará em bypass até adicionar outro.', true);
-      }
     });
 
-    controls.append(enabledToggle, bypassToggle, upBtn, downBtn, removeBtn);
-    item.append(label, controls);
+    actions.append(selectBtn, bypassBtn, upBtn, downBtn, removeBtn);
+    item.append(top, actions);
     patchChainList.appendChild(item);
+  });
+}
+
+function createRangeControl(module, config) {
+  const wrap = document.createElement('div');
+  wrap.className = 'control';
+
+  const head = document.createElement('div');
+  head.className = 'control-head';
+  const label = document.createElement('span');
+  label.textContent = config.label;
+  const valueTag = document.createElement('strong');
+
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(config.min);
+  input.max = String(config.max);
+  input.step = String(config.step);
+  const value = Number(module.params[config.id] ?? 0);
+  input.value = String(value);
+  valueTag.textContent = `${value.toFixed(config.decimals)}${config.suffix}`;
+
+  input.addEventListener('input', (e) => {
+    const next = Number(e.target.value);
+    module.params[config.id] = next;
+    valueTag.textContent = `${next.toFixed(config.decimals)}${config.suffix}`;
+    postToEngine({ type: 'setParam', moduleId: module.id, paramId: config.id, value: next });
+    refreshPatchJsonTextarea();
+  });
+
+  head.append(label, valueTag);
+  wrap.append(head, input);
+  return wrap;
+}
+
+function createSelectControl(module, config) {
+  const wrap = document.createElement('div');
+  wrap.className = 'control';
+  const label = document.createElement('label');
+  label.textContent = config.label;
+
+  const select = document.createElement('select');
+  for (const option of config.options) {
+    const item = document.createElement('option');
+    item.value = String(option.value);
+    item.textContent = option.label;
+    select.appendChild(item);
   }
+
+  const rawValue = module.params[config.id] ?? 0;
+  const selectValue = config.id === 'disableInputDiffusion' ? (rawValue ? 1 : 0) : Number(rawValue);
+  select.value = String(selectValue);
+
+  select.addEventListener('change', (e) => {
+    const next = Number(e.target.value);
+    module.params[config.id] = config.id === 'disableInputDiffusion' ? next === 1 : next;
+    postToEngine({ type: 'setParam', moduleId: module.id, paramId: config.id, value: next });
+    refreshPatchJsonTextarea();
+  });
+
+  wrap.append(label, select);
+  return wrap;
+}
+
+function renderInspector() {
+  const module = findModuleById(selectedModuleId);
+  if (!module) {
+    inspectorContent.className = 'inspector-empty';
+    inspectorContent.textContent = 'Nenhum módulo selecionado. Selecione um item da cadeia para editar parâmetros.';
+    return;
+  }
+
+  inspectorContent.className = 'inspector-controls';
+  inspectorContent.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'control';
+  title.innerHTML = `<div class="control-head"><strong>${module.type.toUpperCase()}</strong><span>${module.id}</span></div>`;
+  inspectorContent.appendChild(title);
+
+  if (module.type === 'earth') {
+    earthParamMappings.forEach((config) => {
+      inspectorContent.appendChild(config.kind === 'range' ? createRangeControl(module, config) : createSelectControl(module, config));
+    });
+    return;
+  }
+
+  if (module.type === 'gain') {
+    inspectorContent.appendChild(createRangeControl(module, {
+      id: 'gain', label: 'Output Gain', kind: 'range', min: 0, max: 2, step: 0.01, decimals: 2, suffix: ''
+    }));
+
+    const bypassWrap = document.createElement('div');
+    bypassWrap.className = 'control';
+    const bypassLabel = document.createElement('label');
+    bypassLabel.textContent = 'Bypass';
+    const bypassSelect = document.createElement('select');
+    bypassSelect.innerHTML = '<option value="0">Off</option><option value="1">On</option>';
+    bypassSelect.value = module.bypass ? '1' : '0';
+    bypassSelect.addEventListener('change', (e) => {
+      module.bypass = e.target.value === '1';
+      postToEngine({ type: 'setModuleBypass', moduleId: module.id, bypass: module.bypass });
+      renderPatchChain();
+      refreshPatchJsonTextarea();
+    });
+    bypassWrap.append(bypassLabel, bypassSelect);
+    inspectorContent.appendChild(bypassWrap);
+    return;
+  }
+
+  const passthroughHint = document.createElement('div');
+  passthroughHint.className = 'control';
+  passthroughHint.textContent = 'Passthrough não possui parâmetros.';
+  inspectorContent.appendChild(passthroughHint);
 }
 
 function syncControlsFromPatch() {
-  syncEarthControlsFromPatch();
-  syncGainControlsFromPatch();
+  if (!findModuleById(selectedModuleId)) selectedModuleId = patchState.chain[0]?.id || null;
   renderPatchChain();
-  refreshPatchJsonTextarea();
-}
-
-function setModuleParam(type, paramId, value) {
-  const module = findFirstModuleByType(type);
-  if (!module) return;
-  module.params[paramId] = value;
-  postToEngine({ type: 'setParam', moduleId: module.id, paramId, value });
+  renderInspector();
   refreshPatchJsonTextarea();
 }
 
 function setupUIBindings() {
-  for (let i = 0; i < earthParamMappings.length; i += 1) {
-    const mapping = earthParamMappings[i];
-    const input = document.getElementById(mapping.id);
-    const valueLabel = document.getElementById(`${mapping.id}-val`);
-    if (!input) continue;
-
-    if (!mapping.isSwitch) {
-      input.addEventListener('input', (e) => {
-        const value = Number(e.target.value);
-        setModuleParam('earth', mapping.id, value);
-
-        if (valueLabel) {
-          valueLabel.textContent = `${value.toFixed(mapping.decimals)}${mapping.suffix}`;
-        }
-      });
-    }
-
-    if (mapping.isSwitch) {
-      input.addEventListener('change', (e) => {
-        const value = Number(e.target.value);
-        setModuleParam('earth', mapping.id, value);
-      });
-    }
-  }
-
-  if (gainInput) {
-    gainInput.addEventListener('input', (e) => {
-      const value = Number(e.target.value);
-      setMetricText(gainValueLabel, value.toFixed(2));
-      setModuleParam('gain', 'gain', value);
-    });
-  }
-
-  if (gainBypassInput) {
-    gainBypassInput.addEventListener('change', (e) => {
-      const gainModule = findFirstModuleByType('gain');
-      if (!gainModule) return;
-      gainModule.bypass = e.target.value === '1';
-      postToEngine({ type: 'setModuleBypass', moduleId: gainModule.id, bypass: gainModule.bypass });
-      renderPatchChain();
-      refreshPatchJsonTextarea();
-    });
-  }
+  addEarthBtn?.addEventListener('click', () => {
+    const module = addModuleToPatch('earth');
+    postToEngine({ type: 'addModule', module });
+    setSelectedModule(module.id);
+    syncControlsFromPatch();
+    setPatchMessage(`Módulo ${module.id} adicionado.`);
+  });
 
   addGainBtn?.addEventListener('click', () => {
     const module = addModuleToPatch('gain');
     postToEngine({ type: 'addModule', module });
+    setSelectedModule(module.id);
     syncControlsFromPatch();
     setPatchMessage(`Módulo ${module.id} adicionado.`);
   });
@@ -771,6 +665,7 @@ function setupUIBindings() {
   addPassthroughBtn?.addEventListener('click', () => {
     const module = addModuleToPatch('passthrough');
     postToEngine({ type: 'addModule', module });
+    setSelectedModule(module.id);
     syncControlsFromPatch();
     setPatchMessage(`Módulo ${module.id} adicionado.`);
   });
@@ -778,29 +673,28 @@ function setupUIBindings() {
   resetPatchBtn?.addEventListener('click', () => {
     patchState = createDefaultPatch();
     updatePatchCountersFromState();
+    selectedModuleId = patchState.chain[0]?.id || null;
     sendPatch();
     syncControlsFromPatch();
-    setPatchMessage('Patch restaurado para o default.');
+    setPatchMessage('Patch restaurado para o padrão.');
   });
 
   exportPatchBtn?.addEventListener('click', async () => {
     refreshPatchJsonTextarea();
-    if (!patchJsonTextarea) return;
     try {
       await navigator.clipboard.writeText(patchJsonTextarea.value);
       setPatchMessage('Patch exportado para a área de transferência.');
-    } catch (err) {
-      setPatchMessage('Patch exportado no painel (não foi possível copiar automaticamente).', true);
+    } catch (_err) {
+      setPatchMessage('Patch disponível no painel (cópia automática indisponível).', true);
     }
   });
 
   importPatchBtn?.addEventListener('click', () => {
-    if (!patchJsonTextarea) return;
-
     try {
       const parsed = parsePatch(patchJsonTextarea.value);
       patchState = clonePatch(parsed);
       updatePatchCountersFromState();
+      selectedModuleId = patchState.chain[0]?.id || null;
       sendPatch();
       syncControlsFromPatch();
       setPatchMessage('Patch importado com sucesso.');
@@ -825,9 +719,7 @@ async function initAudio() {
     }
 
     const wasmBytes = await response.arrayBuffer();
-    earthNode = new AudioWorkletNode(audioCtx, 'earth-worklet-processor', {
-      outputChannelCount: [2]
-    });
+    earthNode = new AudioWorkletNode(audioCtx, 'earth-worklet-processor', { outputChannelCount: [2] });
 
     earthNode.port.onmessage = async (event) => {
       if (event.data.type === 'ready') {
@@ -837,14 +729,13 @@ async function initAudio() {
         }
 
         sendPatch();
-
-        setEngineState('running', 'Engine online. Select source and play.');
+        setEngineState('running', 'Engine online. Escolha fonte e toque áudio.');
 
         try {
           await switchSource(audioSourceSelect.value);
         } catch (err) {
           logError('source activation failed after worklet ready', err);
-          setStatus(`Engine ready, but source activation failed: ${err.message}`);
+          setStatus(`Engine pronta, mas a fonte falhou: ${err.message}`);
         }
         return;
       }
@@ -864,7 +755,7 @@ async function initAudio() {
     earthNode.connect(audioCtx.destination);
     earthNode.port.postMessage({ type: 'init', wasmBytes, maxBlockSize: ENGINE_MAX_BLOCK_SIZE });
 
-    setStatus('Finalizing engine startup…');
+    setStatus('Finalizando startup da engine…');
   } catch (err) {
     logError('audio initialization failed', err);
     setEngineState('error', `Initialization failed: ${err.message}`);
@@ -872,24 +763,22 @@ async function initAudio() {
   }
 }
 
-// Handle Source Switching
 audioSourceSelect.addEventListener('change', async (e) => {
   try {
     await switchSource(e.target.value);
     updateTransportButtons();
   } catch (err) {
     logError('source switch failed', err);
-    setStatus(`Source switch error: ${err.message}`);
+    setStatus(`Erro na troca de fonte: ${err.message}`);
   }
 });
 
-// Handle File Upload
 audioFileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
   if (!audioCtx) {
-    setStatus('Power on engine before loading files.');
+    setStatus('Ligue a engine antes de carregar arquivo.');
     return;
   }
 
@@ -900,8 +789,8 @@ audioFileInput.addEventListener('change', async (e) => {
     audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     pausedOffset = 0;
     updateTimelineUI(0);
-    setTransportState('stopped', `Loaded: ${file.name}`);
-    setStatus('File decoded and ready.');
+    setTransportState('stopped', `Carregado: ${file.name}`);
+    setStatus('Arquivo pronto para reprodução.');
   } catch (err) {
     logError('error decoding audio file', err);
     setEngineState('error', `File decode error: ${err.message}`);
@@ -910,69 +799,58 @@ audioFileInput.addEventListener('change', async (e) => {
 
 playFileBtn.addEventListener('click', () => {
   if (audioSourceSelect.value !== 'file') {
-    setStatus('Switch source to File Player first.');
+    setStatus('Troque para fonte Arquivo para usar transporte.');
     return;
   }
-
   playFile();
 });
 
-pauseFileBtn.addEventListener('click', () => {
-  pausePlayback();
-});
-
-stopFileBtn.addEventListener('click', () => {
-  stopPlayback();
-});
+pauseFileBtn.addEventListener('click', pausePlayback);
+stopFileBtn.addEventListener('click', stopPlayback);
 
 timelineInput.addEventListener('input', () => {
   if (!audioBuffer) return;
-
   const target = (Number(timelineInput.value) / 100) * audioBuffer.duration;
   updateTimelineUI(target);
-
   if (transportState === 'playing') {
     startPlaybackAt(target);
   } else {
     pausedOffset = target;
-    setTransportState('paused', `Position set to ${formatTime(target)}.`);
+    setTransportState('paused', `Posição: ${formatTime(target)}.`);
   }
 });
 
 loopPlaybackInput.addEventListener('change', () => {
-  if (fileSourceNode) {
-    fileSourceNode.loop = loopPlaybackInput.checked;
-  }
+  if (fileSourceNode) fileSourceNode.loop = loopPlaybackInput.checked;
 });
 
 startButton.addEventListener('click', async () => {
   if (!audioCtx) {
     try {
       await initAudio();
-    } catch (err) {
-      // initAudio already reports failure
-    }
+    } catch (_err) {}
     return;
   }
 
   if (audioCtx.state === 'suspended') {
     await audioCtx.resume();
     sendPatch();
-    setEngineState('running', 'Engine running. Audio path active.');
+    setEngineState('running', 'Engine em execução.');
     return;
   }
 
   if (audioCtx.state === 'running') {
     await audioCtx.suspend();
     sendReset();
-    setEngineState('ready', 'Engine initialized but paused. Press power to run audio.');
+    setEngineState('ready', 'Engine inicializada, mas pausada.');
     stopProgressAnimation();
   }
 });
 
 updatePatchCountersFromState();
+selectedModuleId = patchState.chain[0]?.id || null;
 syncControlsFromPatch();
 setPatchMessage('Patch pronto.');
-updateSourceBadge();
+updateSourceUI();
 updateTransportButtons();
 updateTimelineUI(0);
