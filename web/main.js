@@ -38,6 +38,15 @@ const gainInput = document.getElementById('engineGain');
 const gainValueLabel = document.getElementById('engineGain-val');
 const gainBypassInput = document.getElementById('gainBypass');
 
+const patchChainList = document.getElementById('patch-chain-list');
+const addGainBtn = document.getElementById('add-gain-module');
+const addPassthroughBtn = document.getElementById('add-passthrough-module');
+const resetPatchBtn = document.getElementById('restore-default-patch');
+const exportPatchBtn = document.getElementById('export-patch-json');
+const importPatchBtn = document.getElementById('import-patch-json');
+const patchJsonTextarea = document.getElementById('patch-json');
+const patchMessage = document.getElementById('patch-message');
+
 const metricBlockSize = document.getElementById('metric-block-size');
 const metricSampleRate = document.getElementById('metric-sample-rate');
 const metricAvgMs = document.getElementById('metric-avg-ms');
@@ -60,8 +69,196 @@ const earthParamMappings = [
   { id: 'disableInputDiffusion', isSwitch: true }
 ];
 
+const DEFAULT_EARTH_PARAMS = {
+  preDelay: 0.0,
+  mix: 0.5,
+  decay: 0.5,
+  modDepth: 0.5,
+  modSpeed: 0.5,
+  filter: 0.5,
+  eq1Gain: -11.0,
+  eq2Gain: 5.0,
+  reverbSize: 1,
+  octaveMode: 0,
+  disableInputDiffusion: false
+};
+
+let patchState = createDefaultPatch();
+let patchCounters = { earth: 1, gain: 1, passthrough: 0 };
+
+function createDefaultPatch() {
+  return {
+    version: DEFAULT_PATCH_VERSION,
+    meta: { name: 'Default Patch' },
+    chain: [
+      {
+        id: EARTH_MODULE_ID,
+        type: 'earth',
+        enabled: true,
+        bypass: false,
+        params: { ...DEFAULT_EARTH_PARAMS }
+      },
+      {
+        id: GAIN_MODULE_ID,
+        type: 'gain',
+        enabled: true,
+        bypass: false,
+        params: { gain: 1.0 }
+      }
+    ]
+  };
+}
+
+function clonePatch(patch) {
+  return JSON.parse(JSON.stringify(patch));
+}
+
+function normalizeModule(module, index) {
+  if (!module || typeof module !== 'object') {
+    return null;
+  }
+
+  const type = String(module.type || '').trim();
+  if (!['earth', 'gain', 'passthrough'].includes(type)) {
+    return null;
+  }
+
+  const id = String(module.id || `${type}_${index + 1}`);
+  const rawParams = module.params && typeof module.params === 'object' ? module.params : {};
+  const params = {};
+  const paramKeys = Object.keys(rawParams);
+  for (let i = 0; i < paramKeys.length; i += 1) {
+    const key = paramKeys[i];
+    const value = rawParams[key];
+    params[key] = typeof value === 'boolean' ? value : Number(value);
+  }
+
+  return {
+    id,
+    type,
+    enabled: module.enabled !== false,
+    bypass: module.bypass === true,
+    params
+  };
+}
+
+function parsePatch(jsonText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (err) {
+    throw new Error(`JSON inválido: ${err.message}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Patch precisa ser um objeto JSON.');
+  }
+
+  if (!Array.isArray(parsed.chain)) {
+    throw new Error('Patch precisa conter "chain" como array.');
+  }
+
+  const seenIds = new Set();
+  const normalizedChain = [];
+
+  for (let i = 0; i < parsed.chain.length; i += 1) {
+    const normalized = normalizeModule(parsed.chain[i], i);
+    if (!normalized) {
+      throw new Error(`Módulo inválido na posição ${i}. Tipos suportados: earth, gain, passthrough.`);
+    }
+
+    if (seenIds.has(normalized.id)) {
+      throw new Error(`ID duplicado no patch: ${normalized.id}`);
+    }
+    seenIds.add(normalized.id);
+
+    if (normalized.type === 'earth') {
+      normalized.params = { ...DEFAULT_EARTH_PARAMS, ...normalized.params };
+    }
+    if (normalized.type === 'gain') {
+      normalized.params = { gain: Number(normalized.params.gain ?? 1.0) };
+    }
+
+    normalizedChain.push(normalized);
+  }
+
+  return {
+    version: Number(parsed.version) || DEFAULT_PATCH_VERSION,
+    meta: parsed.meta && typeof parsed.meta === 'object'
+      ? { name: String(parsed.meta.name || 'Imported Patch') }
+      : { name: 'Imported Patch' },
+    chain: normalizedChain
+  };
+}
+
+function serializePatch(patch) {
+  return JSON.stringify(patch, null, 2);
+}
+
+function updatePatchCountersFromState() {
+  patchCounters = { earth: 0, gain: 0, passthrough: 0 };
+  for (let i = 0; i < patchState.chain.length; i += 1) {
+    const entry = patchState.chain[i];
+    if (!patchCounters[entry.type] && patchCounters[entry.type] !== 0) continue;
+    const match = String(entry.id).match(/_(\d+)$/);
+    if (match) {
+      patchCounters[entry.type] = Math.max(patchCounters[entry.type], Number(match[1]));
+    }
+  }
+}
+
+function nextModuleId(type) {
+  patchCounters[type] = (patchCounters[type] || 0) + 1;
+  return `${type}_${patchCounters[type]}`;
+}
+
+function addModuleToPatch(type) {
+  const id = nextModuleId(type);
+  const module = {
+    id,
+    type,
+    enabled: true,
+    bypass: false,
+    params: {}
+  };
+
+  if (type === 'gain') {
+    module.params.gain = 1.0;
+  }
+
+  patchState.chain.push(module);
+  return module;
+}
+
+function removeModuleFromPatch(moduleId) {
+  const index = patchState.chain.findIndex((entry) => entry.id === moduleId);
+  if (index === -1) return null;
+  const [removed] = patchState.chain.splice(index, 1);
+  return removed;
+}
+
+function moveModuleInPatch(moduleId, direction) {
+  const index = patchState.chain.findIndex((entry) => entry.id === moduleId);
+  if (index === -1) return false;
+  const target = direction === 'up' ? index - 1 : index + 1;
+  if (target < 0 || target >= patchState.chain.length) return false;
+  const [entry] = patchState.chain.splice(index, 1);
+  patchState.chain.splice(target, 0, entry);
+  return true;
+}
+
+function findFirstModuleByType(type) {
+  return patchState.chain.find((entry) => entry.type === type) || null;
+}
+
 function setStatus(message) {
   statusText.textContent = message;
+}
+
+function setPatchMessage(message, isError = false) {
+  if (!patchMessage) return;
+  patchMessage.textContent = message;
+  patchMessage.dataset.state = isError ? 'error' : 'ok';
 }
 
 function setEngineState(state, message) {
@@ -351,87 +548,17 @@ function stopPlayback() {
   }
 }
 
-function readGainValue() {
-  const fallback = 1.0;
-  if (!gainInput) {
-    return fallback;
-  }
-
-  const value = Number(gainInput.value);
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function readEarthParamsFromUI() {
-  const params = {};
-  for (let i = 0; i < earthParamMappings.length; i += 1) {
-    const mapping = earthParamMappings[i];
-    const input = document.getElementById(mapping.id);
-    if (!input) continue;
-    params[mapping.id] = Number(input.value);
-  }
-
-  return params;
-}
-
-function buildPatch() {
-  return {
-    version: DEFAULT_PATCH_VERSION,
-    chain: [
-      {
-        id: EARTH_MODULE_ID,
-        type: 'earth',
-        enabled: true,
-        bypass: false,
-        params: readEarthParamsFromUI()
-      },
-      {
-        id: GAIN_MODULE_ID,
-        type: 'gain',
-        enabled: true,
-        bypass: gainBypassInput?.value === '1',
-        params: { gain: readGainValue() }
-      }
-    ]
-  };
+function postToEngine(message) {
+  if (!earthNode) return;
+  earthNode.port.postMessage(message);
 }
 
 function sendPatch() {
-  if (!earthNode) return;
-  earthNode.port.postMessage({ type: 'setPatch', patch: buildPatch() });
-}
-
-function sendGainUpdate(value) {
-  if (!earthNode) return;
-  earthNode.port.postMessage({
-    type: 'setParam',
-    moduleId: GAIN_MODULE_ID,
-    paramId: 'gain',
-    value
-  });
-}
-
-function sendEarthParamUpdate(paramId, value) {
-  if (!earthNode) return;
-  earthNode.port.postMessage({
-    type: 'setParam',
-    moduleId: EARTH_MODULE_ID,
-    paramId,
-    value
-  });
-}
-
-function sendGainBypassUpdate(bypass) {
-  if (!earthNode) return;
-  earthNode.port.postMessage({
-    type: 'setModuleBypass',
-    moduleId: GAIN_MODULE_ID,
-    bypass
-  });
+  postToEngine({ type: 'setPatch', patch: clonePatch(patchState) });
 }
 
 function sendReset() {
-  if (!earthNode) return;
-  earthNode.port.postMessage({ type: 'reset' });
+  postToEngine({ type: 'reset' });
 }
 
 function setMetricText(el, text) {
@@ -447,6 +574,143 @@ function updateMetricsUI(metrics) {
   setMetricText(metricPeakMs, Number(metrics.peakProcessMs || 0).toFixed(4));
 }
 
+function syncEarthControlsFromPatch() {
+  const earthModule = findFirstModuleByType('earth');
+
+  for (let i = 0; i < earthParamMappings.length; i += 1) {
+    const mapping = earthParamMappings[i];
+    const input = document.getElementById(mapping.id);
+    const valueLabel = document.getElementById(`${mapping.id}-val`);
+    if (!input) continue;
+
+    const hasEarth = Boolean(earthModule);
+    input.disabled = !hasEarth;
+
+    if (!hasEarth) continue;
+
+    const value = earthModule.params[mapping.id] ?? DEFAULT_EARTH_PARAMS[mapping.id] ?? 0;
+    input.value = String(value);
+
+    if (!mapping.isSwitch && valueLabel) {
+      valueLabel.textContent = `${Number(value).toFixed(mapping.decimals)}${mapping.suffix}`;
+    }
+  }
+}
+
+function syncGainControlsFromPatch() {
+  const gainModule = findFirstModuleByType('gain');
+  const hasGain = Boolean(gainModule);
+
+  if (gainInput) {
+    gainInput.disabled = !hasGain;
+    const value = hasGain ? Number(gainModule.params.gain ?? 1.0) : 1.0;
+    gainInput.value = String(value);
+    setMetricText(gainValueLabel, value.toFixed(2));
+  }
+
+  if (gainBypassInput) {
+    gainBypassInput.disabled = !hasGain;
+    gainBypassInput.value = hasGain && gainModule.bypass ? '1' : '0';
+  }
+}
+
+function refreshPatchJsonTextarea() {
+  if (patchJsonTextarea) {
+    patchJsonTextarea.value = serializePatch(patchState);
+  }
+}
+
+function renderPatchChain() {
+  if (!patchChainList) return;
+
+  patchChainList.innerHTML = '';
+
+  for (let i = 0; i < patchState.chain.length; i += 1) {
+    const module = patchState.chain[i];
+    const item = document.createElement('li');
+    item.className = 'patch-item';
+
+    const label = document.createElement('span');
+    label.className = 'patch-item-label';
+    label.textContent = `${i + 1}. ${module.type} (${module.id})`;
+
+    const controls = document.createElement('div');
+    controls.className = 'patch-item-actions';
+
+    const enabledToggle = document.createElement('button');
+    enabledToggle.className = 'patch-action-btn';
+    enabledToggle.textContent = module.enabled ? 'Disable' : 'Enable';
+    enabledToggle.addEventListener('click', () => {
+      module.enabled = !module.enabled;
+      postToEngine({ type: 'setModuleEnabled', moduleId: module.id, enabled: module.enabled });
+      renderPatchChain();
+    });
+
+    const bypassToggle = document.createElement('button');
+    bypassToggle.className = 'patch-action-btn';
+    bypassToggle.textContent = module.bypass ? 'Unbypass' : 'Bypass';
+    bypassToggle.addEventListener('click', () => {
+      module.bypass = !module.bypass;
+      postToEngine({ type: 'setModuleBypass', moduleId: module.id, bypass: module.bypass });
+      syncGainControlsFromPatch();
+      renderPatchChain();
+    });
+
+    const upBtn = document.createElement('button');
+    upBtn.className = 'patch-action-btn';
+    upBtn.textContent = '↑';
+    upBtn.disabled = i === 0;
+    upBtn.addEventListener('click', () => {
+      if (moveModuleInPatch(module.id, 'up')) {
+        postToEngine({ type: 'reorderModules', moduleIds: patchState.chain.map((entry) => entry.id) });
+        syncControlsFromPatch();
+      }
+    });
+
+    const downBtn = document.createElement('button');
+    downBtn.className = 'patch-action-btn';
+    downBtn.textContent = '↓';
+    downBtn.disabled = i === patchState.chain.length - 1;
+    downBtn.addEventListener('click', () => {
+      if (moveModuleInPatch(module.id, 'down')) {
+        postToEngine({ type: 'reorderModules', moduleIds: patchState.chain.map((entry) => entry.id) });
+        syncControlsFromPatch();
+      }
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'patch-action-btn';
+    removeBtn.textContent = 'Remove';
+    removeBtn.disabled = module.type === 'earth' && patchState.chain.filter((entry) => entry.type === 'earth').length === 1;
+    removeBtn.addEventListener('click', () => {
+      const removed = removeModuleFromPatch(module.id);
+      if (!removed) return;
+      postToEngine({ type: 'removeModule', moduleId: module.id });
+      syncControlsFromPatch();
+      setPatchMessage(`Módulo ${removed.id} removido.`);
+    });
+
+    controls.append(enabledToggle, bypassToggle, upBtn, downBtn, removeBtn);
+    item.append(label, controls);
+    patchChainList.appendChild(item);
+  }
+}
+
+function syncControlsFromPatch() {
+  syncEarthControlsFromPatch();
+  syncGainControlsFromPatch();
+  renderPatchChain();
+  refreshPatchJsonTextarea();
+}
+
+function setModuleParam(type, paramId, value) {
+  const module = findFirstModuleByType(type);
+  if (!module) return;
+  module.params[paramId] = value;
+  postToEngine({ type: 'setParam', moduleId: module.id, paramId, value });
+  refreshPatchJsonTextarea();
+}
+
 function setupUIBindings() {
   for (let i = 0; i < earthParamMappings.length; i += 1) {
     const mapping = earthParamMappings[i];
@@ -454,15 +718,10 @@ function setupUIBindings() {
     const valueLabel = document.getElementById(`${mapping.id}-val`);
     if (!input) continue;
 
-    if (!mapping.isSwitch && valueLabel) {
-      const initialValue = Number(input.value);
-      valueLabel.textContent = `${initialValue.toFixed(mapping.decimals)}${mapping.suffix}`;
-    }
-
     if (!mapping.isSwitch) {
       input.addEventListener('input', (e) => {
         const value = Number(e.target.value);
-        sendEarthParamUpdate(mapping.id, value);
+        setModuleParam('earth', mapping.id, value);
 
         if (valueLabel) {
           valueLabel.textContent = `${value.toFixed(mapping.decimals)}${mapping.suffix}`;
@@ -472,25 +731,78 @@ function setupUIBindings() {
 
     if (mapping.isSwitch) {
       input.addEventListener('change', (e) => {
-        sendEarthParamUpdate(mapping.id, Number(e.target.value));
+        const value = Number(e.target.value);
+        setModuleParam('earth', mapping.id, value);
       });
     }
   }
 
   if (gainInput) {
-    setMetricText(gainValueLabel, Number(gainInput.value).toFixed(2));
     gainInput.addEventListener('input', (e) => {
       const value = Number(e.target.value);
       setMetricText(gainValueLabel, value.toFixed(2));
-      sendGainUpdate(value);
+      setModuleParam('gain', 'gain', value);
     });
   }
 
   if (gainBypassInput) {
     gainBypassInput.addEventListener('change', (e) => {
-      sendGainBypassUpdate(e.target.value === '1');
+      const gainModule = findFirstModuleByType('gain');
+      if (!gainModule) return;
+      gainModule.bypass = e.target.value === '1';
+      postToEngine({ type: 'setModuleBypass', moduleId: gainModule.id, bypass: gainModule.bypass });
+      renderPatchChain();
+      refreshPatchJsonTextarea();
     });
   }
+
+  addGainBtn?.addEventListener('click', () => {
+    const module = addModuleToPatch('gain');
+    postToEngine({ type: 'addModule', module });
+    syncControlsFromPatch();
+    setPatchMessage(`Módulo ${module.id} adicionado.`);
+  });
+
+  addPassthroughBtn?.addEventListener('click', () => {
+    const module = addModuleToPatch('passthrough');
+    postToEngine({ type: 'addModule', module });
+    syncControlsFromPatch();
+    setPatchMessage(`Módulo ${module.id} adicionado.`);
+  });
+
+  resetPatchBtn?.addEventListener('click', () => {
+    patchState = createDefaultPatch();
+    updatePatchCountersFromState();
+    sendPatch();
+    syncControlsFromPatch();
+    setPatchMessage('Patch restaurado para o default.');
+  });
+
+  exportPatchBtn?.addEventListener('click', async () => {
+    refreshPatchJsonTextarea();
+    if (!patchJsonTextarea) return;
+    try {
+      await navigator.clipboard.writeText(patchJsonTextarea.value);
+      setPatchMessage('Patch exportado para a área de transferência.');
+    } catch (err) {
+      setPatchMessage('Patch exportado no painel (não foi possível copiar automaticamente).', true);
+    }
+  });
+
+  importPatchBtn?.addEventListener('click', () => {
+    if (!patchJsonTextarea) return;
+
+    try {
+      const parsed = parsePatch(patchJsonTextarea.value);
+      patchState = clonePatch(parsed);
+      updatePatchCountersFromState();
+      sendPatch();
+      syncControlsFromPatch();
+      setPatchMessage('Patch importado com sucesso.');
+    } catch (err) {
+      setPatchMessage(err.message || 'Falha ao importar patch.', true);
+    }
+  });
 }
 
 async function initAudio() {
@@ -653,6 +965,9 @@ startButton.addEventListener('click', async () => {
   }
 });
 
+updatePatchCountersFromState();
+syncControlsFromPatch();
+setPatchMessage('Patch pronto.');
 updateSourceBadge();
 updateTransportButtons();
 updateTimelineUI(0);
