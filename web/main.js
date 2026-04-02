@@ -644,6 +644,7 @@ function renderPatchChain() {
       module.enabled = !module.enabled;
       postToEngine({ type: 'setModuleEnabled', moduleId: module.id, enabled: module.enabled });
       renderPatchChain();
+      refreshPatchJsonTextarea();
     });
 
     const bypassToggle = document.createElement('button');
@@ -654,6 +655,7 @@ function renderPatchChain() {
       postToEngine({ type: 'setModuleBypass', moduleId: module.id, bypass: module.bypass });
       syncGainControlsFromPatch();
       renderPatchChain();
+      refreshPatchJsonTextarea();
     });
 
     const upBtn = document.createElement('button');
@@ -688,6 +690,9 @@ function renderPatchChain() {
       postToEngine({ type: 'removeModule', moduleId: module.id });
       syncControlsFromPatch();
       setPatchMessage(`Módulo ${removed.id} removido.`);
+      if (removed.type === 'earth' && !findFirstModuleByType('earth')) {
+        setPatchMessage('Último módulo earth removido. DSP principal ficará em bypass até adicionar outro.', true);
+      }
     });
 
     controls.append(enabledToggle, bypassToggle, upBtn, downBtn, removeBtn);
