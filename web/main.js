@@ -689,6 +689,7 @@ function renderPatchChain() {
       if (!removed) return;
       postToEngine({ type: 'removeModule', moduleId: module.id });
       syncControlsFromPatch();
+      setPatchMessage(`Módulo ${removed.id} removido.`);
       if (removed.type === 'earth' && !findFirstModuleByType('earth')) {
         setPatchMessage('Último módulo earth removido. DSP principal ficará em bypass até adicionar outro.', true);
       }
