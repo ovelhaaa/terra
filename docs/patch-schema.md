@@ -33,7 +33,7 @@
       "enabled": true,
       "bypass": false,
       "mix": 1,
-      "params": { "gain": 0.8 },
+      "params": { "gain": 0.8 }, n. bv
       "ui": { "x": 120, "y": 100 }
     }
   ]
