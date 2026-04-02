@@ -655,6 +655,7 @@ function renderPatchChain() {
       postToEngine({ type: 'setModuleBypass', moduleId: module.id, bypass: module.bypass });
       syncGainControlsFromPatch();
       renderPatchChain();
+      refreshPatchJsonTextarea();
     });
 
     const upBtn = document.createElement('button');
