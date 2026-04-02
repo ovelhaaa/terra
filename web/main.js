@@ -14,6 +14,7 @@ let animationFrameId = null;
 
 const ENGINE_MAX_BLOCK_SIZE = 128;
 const DEFAULT_PATCH_VERSION = 1;
+const EARTH_MODULE_ID = 'earth_1';
 const GAIN_MODULE_ID = 'gain_1';
 
 const startButton = document.getElementById('start-audio');
@@ -44,6 +45,20 @@ const metricPeakMs = document.getElementById('metric-peak-ms');
 
 const WORKLET_URL = new URL('./earth-worklet-processor.js', import.meta.url).href;
 const WASM_URL = new URL('./earth-module.wasm', import.meta.url).href;
+
+const earthParamMappings = [
+  { id: 'preDelay', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'mix', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'decay', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'modDepth', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'modSpeed', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'filter', isSwitch: false, suffix: '', decimals: 2 },
+  { id: 'eq1Gain', isSwitch: false, suffix: ' dB', decimals: 1 },
+  { id: 'eq2Gain', isSwitch: false, suffix: ' dB', decimals: 1 },
+  { id: 'reverbSize', isSwitch: true },
+  { id: 'octaveMode', isSwitch: true },
+  { id: 'disableInputDiffusion', isSwitch: true }
+];
 
 function setStatus(message) {
   statusText.textContent = message;
@@ -346,11 +361,29 @@ function readGainValue() {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function readEarthParamsFromUI() {
+  const params = {};
+  for (let i = 0; i < earthParamMappings.length; i += 1) {
+    const mapping = earthParamMappings[i];
+    const input = document.getElementById(mapping.id);
+    if (!input) continue;
+    params[mapping.id] = Number(input.value);
+  }
+
+  return params;
+}
+
 function buildPatch() {
   return {
     version: DEFAULT_PATCH_VERSION,
     chain: [
-      { id: 'pt_1', type: 'passthrough', enabled: true, bypass: false, params: {} },
+      {
+        id: EARTH_MODULE_ID,
+        type: 'earth',
+        enabled: true,
+        bypass: false,
+        params: readEarthParamsFromUI()
+      },
       {
         id: GAIN_MODULE_ID,
         type: 'gain',
@@ -373,6 +406,16 @@ function sendGainUpdate(value) {
     type: 'setParam',
     moduleId: GAIN_MODULE_ID,
     paramId: 'gain',
+    value
+  });
+}
+
+function sendEarthParamUpdate(paramId, value) {
+  if (!earthNode) return;
+  earthNode.port.postMessage({
+    type: 'setParam',
+    moduleId: EARTH_MODULE_ID,
+    paramId,
     value
   });
 }
@@ -405,6 +448,33 @@ function updateMetricsUI(metrics) {
 }
 
 function setupUIBindings() {
+  for (let i = 0; i < earthParamMappings.length; i += 1) {
+    const mapping = earthParamMappings[i];
+    const input = document.getElementById(mapping.id);
+    const valueLabel = document.getElementById(`${mapping.id}-val`);
+    if (!input) continue;
+
+    if (!mapping.isSwitch && valueLabel) {
+      const initialValue = Number(input.value);
+      valueLabel.textContent = `${initialValue.toFixed(mapping.decimals)}${mapping.suffix}`;
+    }
+
+    input.addEventListener('input', (e) => {
+      const value = Number(e.target.value);
+      sendEarthParamUpdate(mapping.id, value);
+
+      if (!mapping.isSwitch && valueLabel) {
+        valueLabel.textContent = `${value.toFixed(mapping.decimals)}${mapping.suffix}`;
+      }
+    });
+
+    if (mapping.isSwitch) {
+      input.addEventListener('change', (e) => {
+        sendEarthParamUpdate(mapping.id, Number(e.target.value));
+      });
+    }
+  }
+
   if (gainInput) {
     setMetricText(gainValueLabel, Number(gainInput.value).toFixed(2));
     gainInput.addEventListener('input', (e) => {
@@ -568,6 +638,7 @@ startButton.addEventListener('click', async () => {
 
   if (audioCtx.state === 'suspended') {
     await audioCtx.resume();
+    sendPatch();
     setEngineState('running', 'Engine running. Audio path active.');
     return;
   }

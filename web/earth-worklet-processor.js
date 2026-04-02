@@ -10,9 +10,7 @@ function ensureURLConstructor() {
   const normalizePath = (path) => {
     const segments = [];
     path.split('/').forEach((segment) => {
-      if (!segment || segment === '.') {
-        return;
-      }
+      if (!segment || segment === '.') return;
       if (segment === '..') {
         segments.pop();
         return;
@@ -51,7 +49,10 @@ function ensureURLConstructor() {
 }
 
 class PassThroughModule {
-  process(channelData, frames) {
+  reset() {}
+  setParam() {}
+
+  process(channelData) {
     return channelData;
   }
 }
@@ -67,6 +68,8 @@ class GainModule {
     }
   }
 
+  reset() {}
+
   process(channelData, frames) {
     const gain = this.gain;
     for (let ch = 0; ch < channelData.length; ch += 1) {
@@ -79,47 +82,173 @@ class GainModule {
   }
 }
 
+class EarthModule {
+  constructor(wasmModule, sampleRateValue, maxBlockSize) {
+    this.module = wasmModule;
+    this.sampleRate = sampleRateValue;
+    this.maxBlockSize = maxBlockSize;
+    this.processor = new wasmModule.EarthAudioProcessor(sampleRateValue);
+
+    this.inLPtr = 0;
+    this.inRPtr = 0;
+    this.outLPtr = 0;
+    this.outRPtr = 0;
+    this.bufferSize = 0;
+
+    this.params = {
+      preDelay: 0.0,
+      mix: 0.5,
+      decay: 0.5,
+      modDepth: 0.5,
+      modSpeed: 0.5,
+      filter: 0.5,
+      eq1Gain: -11.0,
+      eq2Gain: 5.0,
+      reverbSize: 1,
+      octaveMode: 0,
+      disableInputDiffusion: 0
+    };
+
+    this.ensureBuffer(Math.max(1, maxBlockSize || 128));
+  }
+
+  ensureBuffer(size) {
+    if (this.bufferSize === size && this.inLPtr && this.inRPtr && this.outLPtr && this.outRPtr) {
+      return true;
+    }
+
+    this.freeBuffers();
+
+    const bytes = size * Float32Array.BYTES_PER_ELEMENT;
+    this.inLPtr = this.module._malloc(bytes);
+    this.inRPtr = this.module._malloc(bytes);
+    this.outLPtr = this.module._malloc(bytes);
+    this.outRPtr = this.module._malloc(bytes);
+
+    if (!this.inLPtr || !this.inRPtr || !this.outLPtr || !this.outRPtr) {
+      this.freeBuffers();
+      return false;
+    }
+
+    this.bufferSize = size;
+    return true;
+  }
+
+  freeBuffers() {
+    if (!this.module) return;
+
+    if (this.inLPtr) this.module._free(this.inLPtr);
+    if (this.inRPtr) this.module._free(this.inRPtr);
+    if (this.outLPtr) this.module._free(this.outLPtr);
+    if (this.outRPtr) this.module._free(this.outRPtr);
+
+    this.inLPtr = 0;
+    this.inRPtr = 0;
+    this.outLPtr = 0;
+    this.outRPtr = 0;
+    this.bufferSize = 0;
+  }
+
+  setParam(paramId, value) {
+    this.params[paramId] = value;
+  }
+
+  applyParams() {
+    this.processor.setPreDelay(Number(this.params.preDelay) || 0);
+    this.processor.setMix(Number(this.params.mix) || 0);
+    this.processor.setDecay(Number(this.params.decay) || 0);
+    this.processor.setModDepth(Number(this.params.modDepth) || 0);
+    this.processor.setModSpeed(Number(this.params.modSpeed) || 0);
+    this.processor.setFilter(Number(this.params.filter) || 0);
+    this.processor.setEq1Gain(Number(this.params.eq1Gain) || 0);
+    this.processor.setEq2Gain(Number(this.params.eq2Gain) || 0);
+    this.processor.setReverbSize(Math.round(Number(this.params.reverbSize) || 0));
+    this.processor.setOctaveMode(Math.round(Number(this.params.octaveMode) || 0));
+    this.processor.setDisableInputDiffusion(Number(this.params.disableInputDiffusion) > 0.5);
+  }
+
+  process(channelData, frames) {
+    if (!this.ensureBuffer(frames)) {
+      return channelData;
+    }
+
+    const inL = channelData[0];
+    const inR = channelData[1] || channelData[0];
+
+    this.applyParams();
+
+    const heapF32 = this.module.HEAPF32;
+    const inLIndex = this.inLPtr >> 2;
+    const inRIndex = this.inRPtr >> 2;
+    const outLIndex = this.outLPtr >> 2;
+    const outRIndex = this.outRPtr >> 2;
+
+    for (let i = 0; i < frames; i += 1) {
+      heapF32[inLIndex + i] = inL[i];
+      heapF32[inRIndex + i] = inR[i];
+    }
+
+    this.processor.process(this.inLPtr, this.inRPtr, this.outLPtr, this.outRPtr, frames);
+
+    for (let i = 0; i < frames; i += 1) {
+      inL[i] = heapF32[outLIndex + i];
+      inR[i] = heapF32[outRIndex + i];
+    }
+
+    return channelData;
+  }
+
+  dispose() {
+    this.freeBuffers();
+  }
+
+  reset() {}
+}
+
 class SerialAudioEngine {
   constructor() {
     this.sampleRate = 0;
     this.maxBlockSize = 128;
     this.channelCount = 2;
-    this.tempChannels = [];
-    this.currentChannels = [];
+    this.module = null;
     this.modules = [];
     this.moduleStates = [];
   }
 
-  init(sampleRateValue, maxBlockSize) {
+  init(sampleRateValue, maxBlockSize, wasmModule) {
     this.sampleRate = sampleRateValue;
     this.maxBlockSize = Math.max(1, Math.floor(maxBlockSize || 128));
+    this.module = wasmModule || null;
+  }
 
-    this.tempChannels = new Array(this.channelCount);
-    this.currentChannels = new Array(this.channelCount);
-
-    for (let ch = 0; ch < this.channelCount; ch += 1) {
-      this.tempChannels[ch] = new Float32Array(this.maxBlockSize);
-      this.currentChannels[ch] = this.tempChannels[ch];
+  disposeModules() {
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      const state = this.moduleStates[i];
+      if (typeof state.module.dispose === 'function') {
+        state.module.dispose();
+      }
     }
   }
 
   createModule(type) {
     if (type === 'passthrough') return new PassThroughModule();
     if (type === 'gain') return new GainModule();
+    if (type === 'earth' && this.module) {
+      return new EarthModule(this.module, this.sampleRate, this.maxBlockSize);
+    }
     return null;
   }
 
   setPatch(patch) {
     const chain = Array.isArray(patch?.chain) ? patch.chain : [];
+    this.disposeModules();
     this.modules = [];
     this.moduleStates = [];
 
     for (let i = 0; i < chain.length; i += 1) {
       const moduleConfig = chain[i];
       const module = this.createModule(moduleConfig?.type);
-      if (!module) {
-        continue;
-      }
+      if (!module) continue;
 
       const state = {
         id: String(moduleConfig.id || `${moduleConfig.type}_${i}`),
@@ -129,11 +258,10 @@ class SerialAudioEngine {
       };
 
       const params = moduleConfig.params || {};
-      Object.keys(params).forEach((paramId) => {
-        if (typeof module.setParam === 'function') {
-          module.setParam(paramId, Number(params[paramId]));
-        }
-      });
+      const paramIds = Object.keys(params);
+      for (let p = 0; p < paramIds.length; p += 1) {
+        module.setParam(paramIds[p], Number(params[paramIds[p]]));
+      }
 
       this.modules.push(module);
       this.moduleStates.push(state);
@@ -143,7 +271,7 @@ class SerialAudioEngine {
   setParam(moduleId, paramId, value) {
     for (let i = 0; i < this.moduleStates.length; i += 1) {
       const state = this.moduleStates[i];
-      if (state.id === moduleId && typeof state.module.setParam === 'function') {
+      if (state.id === moduleId) {
         state.module.setParam(paramId, Number(value));
         return true;
       }
@@ -163,41 +291,37 @@ class SerialAudioEngine {
   }
 
   reset() {
-    for (let ch = 0; ch < this.channelCount; ch += 1) {
-      this.tempChannels[ch].fill(0);
+    for (let i = 0; i < this.moduleStates.length; i += 1) {
+      const state = this.moduleStates[i];
+      if (typeof state.module.reset === 'function') {
+        state.module.reset();
+      }
     }
   }
 
   process(inputs, outputs, frames) {
     const input = inputs[0] || [];
     const output = outputs[0] || [];
-    if (output.length === 0 || frames <= 0) {
-      return;
-    }
+    if (output.length === 0 || frames <= 0) return;
 
     for (let ch = 0; ch < this.channelCount; ch += 1) {
       const inChannel = input[ch] || input[0];
       const outChannel = output[ch] || output[0];
-      if (!outChannel) {
-        continue;
-      }
+      if (!outChannel) continue;
 
       if (inChannel) {
-        outChannel.set(inChannel.subarray(0, frames));
+        outChannel.set(inChannel);
       } else {
         outChannel.fill(0, 0, frames);
       }
-
-      this.currentChannels[ch] = outChannel;
     }
+
+    const channelData = [output[0], output[1] || output[0]];
 
     for (let i = 0; i < this.moduleStates.length; i += 1) {
       const state = this.moduleStates[i];
-      if (!state.enabled || state.bypass) {
-        continue;
-      }
-
-      state.module.process(this.currentChannels, frames);
+      if (!state.enabled || state.bypass) continue;
+      state.module.process(channelData, frames);
     }
   }
 }
@@ -221,9 +345,7 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
       const msg = event.data || {};
 
       if (msg.type === 'init') {
-        this.init(msg.wasmBytes, msg.maxBlockSize).catch((err) => {
-          this.reportError('init', err);
-        });
+        this.init(msg.wasmBytes, msg.maxBlockSize).catch((err) => this.reportError('init', err));
         return;
       }
 
@@ -249,33 +371,34 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
   }
 
   reportError(stage, err) {
-    const message = err?.message || String(err);
-    const stack = err?.stack || null;
     this.port.postMessage({
       type: 'error',
       stage,
-      message,
-      stack
+      message: err?.message || String(err),
+      stack: err?.stack || null
     });
   }
 
   async init(wasmBytes, maxBlockSize) {
-    if (this.isInitializing) {
+    if (this.isInitializing) return;
+    this.isInitializing = true;
+
+    if (!wasmBytes || wasmBytes.byteLength === 0) {
+      this.reportError('module-init', new Error('Missing wasm bytes'));
+      this.isInitializing = false;
       return;
     }
 
-    this.isInitializing = true;
-
-    if (wasmBytes && wasmBytes.byteLength > 0) {
-      try {
-        ensureURLConstructor();
-        this.module = await Module({ wasmBinary: wasmBytes });
-      } catch (err) {
-        this.reportError('module-init', err);
-      }
+    try {
+      ensureURLConstructor();
+      this.module = await Module({ wasmBinary: wasmBytes });
+    } catch (err) {
+      this.reportError('module-init', err);
+      this.isInitializing = false;
+      return;
     }
 
-    this.engine.init(sampleRate, maxBlockSize || 128);
+    this.engine.init(sampleRate, maxBlockSize || 128, this.module);
     this.port.postMessage({ type: 'ready', sampleRate, maxBlockSize: maxBlockSize || 128 });
     this.isInitializing = false;
   }
@@ -283,7 +406,7 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
   maybeReportMetrics(frames, elapsedMs) {
     this.metrics.callbacks += 1;
     this.metrics.totalMs += elapsedMs;
-    this.metrics.peakMs = Math.max(this.metrics.peakMs, elapsedMs);
+    if (elapsedMs > this.metrics.peakMs) this.metrics.peakMs = elapsedMs;
 
     if (this.metrics.callbacks % this.metrics.reportInterval === 0) {
       this.port.postMessage({
@@ -298,20 +421,15 @@ class EarthWorkletProcessor extends AudioWorkletProcessor {
 
   process(inputs, outputs) {
     const output = outputs[0];
-    if (!output || output.length === 0) {
+    const frames = output?.[0]?.length || 0;
+    if (!output || output.length === 0 || frames <= 0) {
       return true;
     }
 
-    const frames = output[0]?.length || 0;
-    if (frames <= 0) {
-      return true;
-    }
-
-    const startMs = globalThis.performance ? globalThis.performance.now() : 0;
+    const start = globalThis.performance ? globalThis.performance.now() : 0;
     this.engine.process(inputs, outputs, frames);
-    const endMs = globalThis.performance ? globalThis.performance.now() : startMs;
-
-    this.maybeReportMetrics(frames, endMs - startMs);
+    const end = globalThis.performance ? globalThis.performance.now() : start;
+    this.maybeReportMetrics(frames, end - start);
 
     return true;
   }
